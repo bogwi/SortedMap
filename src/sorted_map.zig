@@ -51,11 +51,11 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             EmptyList,
             StartKeyIsGreaterThanEndKey,
             StartIndexIsGreaterThanEndIndex,
+            MissingKey,
             MissingStartKey,
             MissingEndKey,
             InvalidIndex,
             StepIndexIsZero,
-            TempError,
         };
 
         const Self = @This();
@@ -1127,6 +1127,25 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 return node.item;
             } else return null;
         }
+
+        /// Return the index of the Item associated with the given key or
+        /// return `null` if no such Item present in the map.
+        ///
+        /// In the case of duplicate keys, when the SortedMap works in the `.list` mode,
+        /// it will return the index of the rightmost Item.
+        pub fn getItemIndexByKey(self: *Self, key: KEY) ?i64 {
+            var node: *Node = self.header;
+            var width: usize = 0;
+
+            while (node.parent != null) {
+                node = node.parent.?;
+                while (gTE(key, node.next.?.item.key)) {
+                    width += node.next.?.width;
+                    node = node.next.?;
+                }
+            }
+            return if (EQL(key, node.item.key)) @bitCast(width -| 1) else null;
+        }
     };
 }
 
@@ -1274,6 +1293,12 @@ test "SortedMap: basics" {
         try clone.put(v - 100 * 3, v - 100 * 3);
     }
 
+    const query: i64 = -299;
+    try expect(clone.get(query) == clone.getByIndex(clone.getItemIndexByKey(query).?));
+    try expect(clone.getItemIndexByKey(query - 100) == null);
+    try expect(clone.getItemIndexByKey(query * -1) == null);
+    try expect(clone.getItemIndexByKey(query - 1) != null);
+
     try expect(clone.getFirstOrNull().? == @as(i64, -300));
     try expect(clone.getLastOrNull().? == @as(i64, 62));
 }
@@ -1365,11 +1390,13 @@ test "SortedMap: a string as a key" {
     try sL.put(message[old_idx..], counter + 1);
 
     try expect(sL.get("Zig") == 0);
+    try expect(sL.getItemIndexByKey("Zig") == @as(i64, 0));
     try expect(sL.contains("Zig"));
     try expect(sL.removeByIndex(0));
     try expect(!sL.contains("Zig"));
     try expect(sEql(u8, sL.getItemByIndex(0).?.key, "a"));
     try expect(sL.get("a") == 2);
+    try expect(sL.getItemIndexByKey("toolchain") == @as(i64, @bitCast(sL.size - 1)));
 
     try expect(try sL.removeSliceByIndex(-7, 20)); // will trim the message from the right
     try expect(sL.size == 6);
