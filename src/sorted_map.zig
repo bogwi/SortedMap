@@ -61,8 +61,10 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         const Self = @This();
         const Stack = std.ArrayList(*Node);
         const Cache = @import("cache.zig").Cache(Node);
-        /// Fixed probability of map growth up in "express lines.
+        /// Fixed probability of map growth up in "express lines."
         const p: u3 = 7;
+
+        var mutex = std.Thread.Mutex{};
 
         trailer: *Node = undefined,
         header: *Node = undefined,
@@ -113,7 +115,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 self.header,
             );
             self.header = if (!keyIsString) try self.makeNode(
-                Item{ .key = -MAXSIZE, .value = undefined },
+                Item{ .key = minSIZE, .value = undefined },
                 self.trailer,
                 null,
                 0,
@@ -135,7 +137,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
         fn addNewLayer(self: *Self) !void {
             self.header = if (!keyIsString) try self.makeNode(
-                Item{ .key = -MAXSIZE, .value = undefined },
+                Item{ .key = minSIZE, .value = undefined },
                 self.trailer,
                 self.header,
                 0,
@@ -449,7 +451,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         }
         /// Print to the screen the size of the current memory being used by the arena allocator
         /// along with the cache's len.
-        fn arenaCacheSizeQuery(self: *Self) void {
+        pub fn arenaCacheSizeQuery(self: *Self) void {
             std.debug.print("\narena size: {}, cache len: {}\n", .{
                 self.cache.arena.queryCapacity(),
                 self.cache.free.len,
@@ -478,6 +480,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
         /// De-initialize the map.
         pub fn deinit(self: *Self) void {
+            mutex.lock();
+            defer mutex.unlock();
+
             self.stack.deinit();
             self.cache.deinit();
         }
@@ -524,8 +529,10 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
         /// Clear the map of all items and clear the cache.
         pub fn clearAndFree(self: *Self) !void {
-            self.cache.clear();
+            mutex.lock();
+            defer mutex.unlock();
 
+            self.cache.clear();
             _ = self.cache.arena.reset(.free_all);
 
             // Re-Initiate the SortedMap's header and trailer
@@ -538,6 +545,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Clear the map of all items but retain the cache.
         /// Useful if your map contracts and expands on new data often.
         pub fn clearRetainingCapacity(self: *Self) !void {
+            mutex.lock();
+            defer mutex.unlock();
 
             // Reuse all the list
             var node: *Node = self.header;
@@ -561,8 +570,12 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             self.size = 0;
         }
 
-        /// Put a given key-value pair into the map.
+        /// Put a given key-value pair into the map. In the `.set` mode,
+        /// it will clobber the existing value of an item associated with the key.
         pub fn put(self: *Self, key: KEY, value_: VALUE) !void {
+            mutex.lock();
+            defer mutex.unlock();
+
             var stack = try self.getLevelStack(key);
 
             if (!keyIsString) {
@@ -586,7 +599,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             var node: *Node = stack.pop();
 
             var item: Item = undefined;
-
             if (!keyIsString) {
                 item = Item{ .key = @as(Key, @bitCast(key)), .value = value_ };
             } else {
@@ -627,17 +639,10 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             while (node.parent != null) {
                 node = node.parent.?;
                 while (gTE(key, node.next.?.item.key)) {
-                    if (!keyIsString) {
-                        if (eql(key, node.next.?.item.key))
-                            return true;
-                    } else {
-                        if (sEql(u8, key, node.next.?.item.key))
-                            return true;
-                    }
                     node = node.next.?;
                 }
             }
-            return false;
+            return if (!keyIsString) eql(key, node.item.key) else sEql(u8, key, node.item.key);
         }
 
         /// Pop the MAP last item's value or null if the map is empty.
@@ -723,6 +728,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Returns null if the MAP does not contain such entry.
         /// Takes negative indices akin to Python's list.
         pub fn fetchRemoveByIndex(self: *Self, index: i64) ?Item {
+            mutex.lock();
+            defer mutex.unlock();
+
             if (absCast(index) > self.size) return null;
             var index_: u64 = if (index < 0) self.size -| absCast(index) else absCast(index);
 
@@ -738,6 +746,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Remove an entry associated with the given keys from the map and return it to the caller.
         /// Returns null if the MAP does not contain such entry.
         pub fn fetchRemove(self: *Self, key: KEY) ?Item {
+            mutex.lock();
+            defer mutex.unlock();
+
             var stack: Stack = self.getLevelStack(key) catch unreachable;
             var item: Item = stack.getLast().*.item;
             var key_ = if (!keyIsString) @as(Key, @bitCast(key)) else key;
@@ -757,6 +768,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Returns an error if `start_key` > `stop_key` to indicate the issue.
         /// Returns an error if one of the keys is missing.
         pub fn removeSlice(self: *Self, start_key: KEY, stop_key: KEY) !bool {
+            mutex.lock();
+            defer mutex.unlock();
+
             if (self.size == 0) return false;
             if (gT(start_key, stop_key)) return SortedMapError.StartKeyIsGreaterThanEndKey;
 
@@ -814,6 +828,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Returns InvalidIndex error if the given indices are out of the map's span.
         pub fn removeSliceByIndex(self: *Self, start: i64, stop: i64) !bool {
+            mutex.lock();
+            defer mutex.unlock();
+
             if (start >= self.size) return false;
 
             var start_: u64 = if (start < 0) self.size -| absCast(start) else absCast(start);
@@ -1014,6 +1031,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Supports negative indices akin to Python's list() class.
         pub fn getSlice(self: *Self, start: i64, stop: i64, step: i64) !SliceIterator {
+            mutex.lock();
+            defer mutex.unlock();
+
             if (start >= stop) return SortedMapError.StartIndexIsGreaterThanEndIndex;
 
             if (step == 0) return SortedMapError.StepIndexIsZero;
@@ -1123,6 +1143,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Supports negative (reverse) indexing.
         pub fn getItemByIndex(self: *Self, index: i64) ?Item {
+            mutex.lock();
+            defer mutex.unlock();
+
             while (self.getNodePtrByIndex(index)) |node| {
                 return node.item;
             } else return null;
@@ -1151,6 +1174,35 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
 var allocatorT = std.testing.allocator;
 const expect = std.testing.expect;
+
+test "SortedMap: simple" {
+    var sL: SortedMap(u64, u64, .set) = .{};
+    try sL.init(allocatorT);
+    defer sL.deinit();
+
+    var keys = std.ArrayList(u64).init(allocatorT);
+    defer keys.deinit();
+
+    var prng = std.rand.DefaultPrng.init(0);
+    const random = prng.random();
+
+    var k: u64 = 0;
+    while (k < 32) : (k += 1) {
+        try keys.append(k);
+    }
+
+    random.shuffle(u64, keys.items);
+    for (keys.items) |v| {
+        try sL.put(v, v);
+        try sL.put(v, v + 2);
+    }
+
+    try expect(sL.size == 32);
+    var items = sL.items();
+    while (items.next()) |item| {
+        try expect(item.key == item.value - 2);
+    }
+}
 
 test "SortedMap: basics" {
     const SL = SortedMap(i64, i64, .list);
