@@ -27,16 +27,13 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
     const keyIsString: bool = comptime if (KEY == []const u8) true else false;
 
     return struct {
-        // const MAXSIZE = if (@typeInfo(KEY) == .Int) @as(KEY, @bitCast(std.math.inf(f64))) else if (@typeInfo(KEY) == .Float) @as(f64, @bitCast(std.math.inf(f64))) else if (keyIsString) @as([]const u8, "ÿ");
         const MAXSIZE = if (keyIsString) @as([]const u8, "ÿ") else if ((@typeInfo(KEY) == .Int) or (@typeInfo(KEY) == .Float)) @as(KEY, @bitCast(std.math.inf(f64))) else @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
 
         // const minSIZE = if (keyIsString) @as([]const u8, " ") else MAXSIZE;
 
-        // const Key = if (!keyIsString) @TypeOf(MAXSIZE) else []const u8;
-
         /// A field struct containing a key-value pair.
         ///
-        /// Format is this: { key, ?VALUE }\
+        /// Format is this: { KEY, VALUE }\
         /// Accessed VALUE must be tested for null.
         pub const Item = struct { key: KEY, value: VALUE };
 
@@ -600,11 +597,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             var node: *Node = stack.pop();
 
             var item: Item = undefined;
-            // if (!keyIsString) {
             item = Item{ .key = key, .value = value_ };
-            // } else {
-            //     item = Item{ .key = key, .value = value_ };
-            // }
 
             var par: *Node = try self.insertNodeWithAllocation(item, node, null, 1);
 
@@ -1203,7 +1196,6 @@ test "SortedMap: simple" {
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
-    try sL.printAbstractForm();
 }
 
 test "SortedMap: basics" {
