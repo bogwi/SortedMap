@@ -27,17 +27,18 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
     const keyIsString: bool = comptime if (KEY == []const u8) true else false;
 
     return struct {
-        const MAXSIZE = if (@typeInfo(KEY) == .Int) @as(i64, @bitCast(std.math.inf(f64))) else if (@typeInfo(KEY) == .Float) @as(f64, @bitCast(std.math.inf(f64))) else if (keyIsString) @as([]const u8, "ÿ");
+        // const MAXSIZE = if (@typeInfo(KEY) == .Int) @as(KEY, @bitCast(std.math.inf(f64))) else if (@typeInfo(KEY) == .Float) @as(f64, @bitCast(std.math.inf(f64))) else if (keyIsString) @as([]const u8, "ÿ");
+        const MAXSIZE = if (keyIsString) @as([]const u8, "ÿ") else if ((@typeInfo(KEY) == .Int) or (@typeInfo(KEY) == .Float)) @as(KEY, @bitCast(std.math.inf(f64))) else @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
 
-        const minSIZE = if (keyIsString) @as([]const u8, " ") else -MAXSIZE;
+        // const minSIZE = if (keyIsString) @as([]const u8, " ") else MAXSIZE;
 
-        const Key = if (!keyIsString) @TypeOf(MAXSIZE) else []const u8;
+        // const Key = if (!keyIsString) @TypeOf(MAXSIZE) else []const u8;
 
         /// A field struct containing a key-value pair.
         ///
         /// Format is this: { key, ?VALUE }\
         /// Accessed VALUE must be tested for null.
-        pub const Item = struct { key: Key, value: VALUE };
+        pub const Item = struct { key: KEY, value: VALUE };
 
         pub const Node = struct {
             item: Item = undefined,
@@ -115,13 +116,13 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 self.header,
             );
             self.header = if (!keyIsString) try self.makeNode(
-                Item{ .key = minSIZE, .value = undefined },
+                Item{ .key = MAXSIZE, .value = undefined },
                 self.trailer,
                 null,
                 0,
                 null,
             ) else try self.makeNode(
-                Item{ .key = minSIZE, .value = undefined },
+                Item{ .key = MAXSIZE, .value = undefined },
                 self.trailer,
                 null,
                 0,
@@ -137,13 +138,13 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
         fn addNewLayer(self: *Self) !void {
             self.header = if (!keyIsString) try self.makeNode(
-                Item{ .key = minSIZE, .value = undefined },
+                Item{ .key = MAXSIZE, .value = undefined },
                 self.trailer,
                 self.header,
                 0,
                 null,
             ) else try self.makeNode(
-                Item{ .key = minSIZE, .value = undefined },
+                Item{ .key = MAXSIZE, .value = undefined },
                 self.trailer,
                 self.header,
                 0,
@@ -275,7 +276,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             }
             return node;
         }
-        fn removeLoop(self: *Self, key: Key, stack: *Stack) void {
+        fn removeLoop(self: *Self, key: KEY, stack: *Stack) void {
             while (stack.items.len > 0) {
                 var node: *Node = stack.pop();
                 if (!keyIsString) {
@@ -373,11 +374,11 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
                     var key_len: u64 = if (keyIsString) self.giveSize(node.item.key) else self.giveSize(@bitCast(node.item.key));
 
-                    if (eql(node.item.key, minSIZE)) {
+                    if (node.prev == null) {
                         key_len = 1;
                     }
 
-                    var span: u64 = index - key_len - if (!eql(node.item.key, minSIZE)) temp_index else temp_index -| 1;
+                    var span: u64 = index - key_len - if (node.prev != null) temp_index else temp_index -| 1;
                     for (0..span) |_| {
                         std.debug.print("_", .{});
                     }
@@ -435,7 +436,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             var items_ = self.items();
             while (items_.next()) |item__| {
-                var stack = try self.getLevelStack(@bitCast(item__.key));
+                var stack = try self.getLevelStack(item__.key);
 
                 var node__ = stack.getLast();
                 for (0..stack.items.len) |_| {
@@ -501,8 +502,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             try new.init(alloc);
             var self_items = self.items();
             while (self_items.next()) |item| {
-                const key = if (!keyIsString) @as(KEY, @bitCast(item.key)) else item.key;
-                try new.put(key, item.value);
+                // const key = if (!keyIsString) @as(KEY, @bitCast(item.key)) else item.key;
+                try new.put(item.key, item.value);
             }
             return new;
         }
@@ -521,8 +522,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             try new.init(self.alloc);
             var self_items = self.items();
             while (self_items.next()) |item| {
-                const key = if (!keyIsString) @as(KEY, @bitCast(item.key)) else item.key;
-                try new.put(key, item.value);
+                // const key = if (!keyIsString) @as(KEY, @bitCast(item.key)) else item.key;
+                try new.put(item.key, item.value);
             }
             return new;
         }
@@ -579,7 +580,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             var stack = try self.getLevelStack(key);
 
             if (!keyIsString) {
-                if (mode == .set and eql(stack.getLast().item.key, @as(Key, @bitCast(key)))) {
+                if (mode == .set and eql(stack.getLast().item.key, key)) {
                     assert(self.update(key, value_));
                     return;
                 }
@@ -599,11 +600,11 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             var node: *Node = stack.pop();
 
             var item: Item = undefined;
-            if (!keyIsString) {
-                item = Item{ .key = @as(Key, @bitCast(key)), .value = value_ };
-            } else {
-                item = Item{ .key = key, .value = value_ };
-            }
+            // if (!keyIsString) {
+            item = Item{ .key = key, .value = value_ };
+            // } else {
+            //     item = Item{ .key = key, .value = value_ };
+            // }
 
             var par: *Node = try self.insertNodeWithAllocation(item, node, null, 1);
 
@@ -751,14 +752,14 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             var stack: Stack = self.getLevelStack(key) catch unreachable;
             var item: Item = stack.getLast().*.item;
-            var key_ = if (!keyIsString) @as(Key, @bitCast(key)) else key;
+            // var key_ = if (!keyIsString) @as(KEY, @bitCast(key)) else key;
             if (!keyIsString) {
-                if (!eql(item.key, key_)) return null;
+                if (!eql(item.key, key)) return null;
             } else {
-                if (!sEql(u8, item.key, key_)) return null;
+                if (!sEql(u8, item.key, key)) return null;
             }
 
-            self.removeLoop(key_, &stack);
+            self.removeLoop(key, &stack);
             self.size -|= 1;
             return item;
         }
@@ -791,7 +792,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 var e_node: *Node = e.pop();
 
                 var node: *Node = s_node;
-                if (!EQL(s_node.item.key, minSIZE) and !EQL(s_node.item.key, MAXSIZE))
+                if (s_node.prev != null and !EQL(s_node.item.key, MAXSIZE))
                     self.cache.reuse(s_node); // reuse allocated memory
 
                 var width: u64 = node.width;
@@ -811,7 +812,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 }
 
                 // this ternary expression is simple and trims redundant levels
-                if (!EQL(s_node.item.key, minSIZE)) {
+                if (s_node.prev != null) {
                     s_node.prev.?.next = e_node.next.?;
                     e_node.next.?.prev = s_node.prev.?;
                 } else {
@@ -855,7 +856,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 var e_node: *Node = e.pop();
 
                 var node: *Node = s_node;
-                if (!EQL(s_node.item.key, minSIZE) and !EQL(s_node.item.key, MAXSIZE))
+                if (s_node.prev != null and !EQL(s_node.item.key, MAXSIZE))
                     self.cache.reuse(s_node); // reuse allocated memory
 
                 var width: u64 = node.width;
@@ -875,7 +876,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 }
 
                 // this ternary expression is simple and trims redundant levels
-                if (!EQL(s_node.item.key, minSIZE)) {
+                if (s_node.prev != null) {
                     s_node.prev.?.next = e_node.next.?;
                     e_node.next.?.prev = s_node.prev.?;
                 } else {
@@ -899,7 +900,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             grr: *Node,
 
             pub fn prev(self: *ReverseIterator) ?Item {
-                while (!eql(self.grr.item.key, minSIZE)) {
+                while (self.grr.prev != null) {
                     var node__ = self.grr;
                     self.grr = node__.prev.?;
                     return node__.item;
@@ -1002,7 +1003,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 }
             }
             if (!keyIsString) {
-                if (eql(node.item.key, @as(Key, @bitCast(key)))) {
+                if (eql(node.item.key, key)) {
                     return node;
                 } else return null;
             } else {
@@ -1202,6 +1203,7 @@ test "SortedMap: simple" {
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
+    try sL.printAbstractForm();
 }
 
 test "SortedMap: basics" {
