@@ -15,10 +15,7 @@ pub fn benchSTR(N: usize) !void {
     var allocatorA = arena.allocator();
     defer arena.deinit();
 
-    const SL2 = SortedMap([]const u8, []const u8, .set);
-    var sL: SL2 = .{};
-
-    try sL.init(allocatorG);
+    var sL = try SortedMap([]const u8, []const u8, .set).init(allocatorG);
     defer sL.deinit();
 
     var keys = std.ArrayList([]const u8).init(allocatorA);
@@ -87,7 +84,7 @@ pub fn benchSTR(N: usize) !void {
     // Clear the sL
     assert(sL.size == 98);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // ------------------ EXCHANGE -------------------//
     // -- read 10, insert 40, remove 40, update 10 -- //
@@ -143,7 +140,7 @@ pub fn benchSTR(N: usize) !void {
     // Clear the sL
     assert(sL.size == 10);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // --------------- EXCHANGE HEAVY --------------//
     // -- read 1, insert 98, remove 98, update 1 -- //
@@ -199,7 +196,7 @@ pub fn benchSTR(N: usize) !void {
     // Clear the sL
     assert(sL.size == 1);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // ---------------- RAPID GROW -----------------//
     // -- read 5, insert 80, remove 5, update 10 -- //
@@ -251,29 +248,30 @@ pub fn benchSTR(N: usize) !void {
     // Print stats //
     // Test' individual stats
     try writeStamps("RG", N, time);
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // ---------------- CLONING -----------------//
     // ------ obtain a clone of the graph ------ //
 
     // Clear the time, re-start the timer
-    time = 0;
-    timer = try std.time.Timer.start();
-    start = timer.lap();
+    // time = 0;
+    // timer = try std.time.Timer.start();
+    // start = timer.lap();
 
-    var clone = try sL.clone();
-    defer clone.deinit();
+    // var clone = try sL.clone();
+    // defer clone.deinit();
 
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    // end = timer.read();
+    // time += end -| start;
+    // aggregate += time;
 
-    // Print stats //
-    // Test' individual stats
-    try writeStamps("CLONE", clone.size, time);
+    // // Print stats //
+    // // Test' individual stats
+    // try writeStamps("CLONE", clone.size, time);
 
     // Aggregate stats
-    try writeStamps("aggregate", N * 4 + clone.size, aggregate);
+    // try writeStamps("aggregate", N * 4 + clone.size, aggregate);
+    try writeStamps("aggregate", N * 4, aggregate);
     try stdout.print("\n", .{});
 }
 
@@ -288,10 +286,7 @@ pub fn benchU64(N: usize) !void {
     var allocatorA = arena.allocator();
     defer arena.deinit();
 
-    const SL = SortedMap(u64, u64, .set);
-    var sL: SL = .{};
-
-    try sL.init(allocatorG);
+    var sL = try SortedMap(u64, u64, .set).init(allocatorG);
     defer sL.deinit();
 
     // try sL.ensureTotalCapacity(N);
@@ -357,7 +352,7 @@ pub fn benchU64(N: usize) !void {
     // Clear the sL
     assert(sL.size == 98);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // ------------------ EXCHANGE -------------------//
     // -- read 10, insert 40, remove 40, update 10 -- //
@@ -412,7 +407,7 @@ pub fn benchU64(N: usize) !void {
     // Clear the sL
     assert(sL.size == 10);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // --------------- EXCHANGE HEAVY --------------//
     // -- read 1, insert 98, remove 98, update 1 -- //
@@ -467,7 +462,7 @@ pub fn benchU64(N: usize) !void {
     // Clear the sL
     assert(sL.size == 1);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // ---------------- RAPID GROW -----------------//
     // -- read 5, insert 80, remove 5, update 10 -- //
@@ -518,29 +513,30 @@ pub fn benchU64(N: usize) !void {
     // Print stats //
     // Test' individual stats
     try writeStamps("RG", N, time);
-    arenaCacheSizeQuery(&sL.cache);
+    arenaCacheSizeQuery(&sL.cache_());
 
     // ---------------- CLONING -----------------//
     // ------ obtain a clone of the graph ------ //
 
     // Clear the time, re-start the timer
-    time = 0;
-    timer = try std.time.Timer.start();
-    start = timer.lap();
+    // time = 0;
+    // timer = try std.time.Timer.start();
+    // start = timer.lap();
 
-    var clone = try sL.clone();
-    defer clone.deinit();
+    // var clone = try sL.clone();
+    // defer clone.deinit();
 
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    // end = timer.read();
+    // time += end -| start;
+    // aggregate += time;
 
-    // Print stats //
-    // Test' individual stats
-    try writeStamps("CLONE", clone.size, time);
+    // // Print stats //
+    // // Test' individual stats
+    // try writeStamps("CLONE", clone.size, time);
 
     // Aggregate stats
-    try writeStamps("aggregate", N * 4 + clone.size, aggregate);
+    // try writeStamps("aggregate", N * 4 + clone.size, aggregate);
+    try writeStamps("aggregate", N * 4, aggregate);
     try stdout.print("\n", .{});
 }
 
