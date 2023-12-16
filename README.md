@@ -134,15 +134,15 @@ Think of the SortedMap as your go to ADT whenever you need to have your keys alw
 ```
 zig build bench
 ```
-by default it runs 1000 rounds each test on `u64` type
+by default it runs 100_000 rounds each test on `u64` type
 
-Give it a number to stress the map more
+Give it a larger number to stress the map more
 ```
-zig build bench -- 100_000
+zig build bench -- 1_000_000
 ```
 prepend with `-str` to test on `[8]u8` literal.
 ```
-zig build bench -- 100_000 -str
+zig build bench -- 1_000_000 -str
 ```
 
 ## How to use it

@@ -627,7 +627,7 @@ pub fn main() !void {
     defer std.process.argsFree(fixed.allocator(), args);
 
     // default number of operations
-    var N: usize = 1_000;
+    var N: usize = 100_000;
     var string: bool = false;
 
     var i: usize = 1;
