@@ -150,7 +150,7 @@ It is best to copy the `sorted_map.zig` and `cache.zig` into your project or mak
 
 Declare in your file:
 ```zig
-const SortedMap = @import("skiplist.zig").SortedMap;
+const SortedMap = @import("sorted_map.zig").SortedMap;
 ```
 
 Initiate for numeric keys:
