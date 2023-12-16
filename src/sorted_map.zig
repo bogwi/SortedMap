@@ -3,7 +3,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const Tag = std.meta.activeTag;
 const eql = std.meta.eql;
 const sEql = std.mem.eql;
 const absCast = std.math.absCast;
@@ -28,8 +27,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
     return struct {
         const MAXSIZE = if (keyIsString) @as([]const u8, "ÿ") else if ((@typeInfo(KEY) == .Int) or (@typeInfo(KEY) == .Float)) @as(KEY, @bitCast(std.math.inf(f64))) else @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
-
-        // const minSIZE = if (keyIsString) @as([]const u8, " ") else MAXSIZE;
 
         /// A field struct containing a key-value pair.
         ///
@@ -205,7 +202,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                     }
                 }
                 try self.stack.append(node);
-                // std.debug.print("\nappended: {d}", .{node.item.key});
             }
             if (!foundKey) {
                 self.stack.clearRetainingCapacity();
@@ -317,145 +313,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             return node;
         }
 
-        /// Educational function.
-        ///
-        /// Prints MAP's abstract form, the way it is build internally.
-        /// Handle the map of any length. The README examples are printed with this function.
-        ///
-        /// Does not work with floats.
-        /// Do not use this function in production.
-        fn printAbstractForm(self: *Self) !void {
-            if (@typeInfo(KEY) == .Float)
-                @compileError("printAbstractForm() works only with integer keys and strings");
-            if (self.size == 0) {
-                std.debug.print("\nNothingToPrint_SortedMapIsEmpty\n", .{});
-                return;
-            }
-
-            std.debug.print("\nSortedMap: Abstract Form\n", .{});
-            var temp = self.header;
-            var width: u64 = 0;
-
-            var L = std.ArrayList(u2).init(self.alloc);
-            defer L.deinit();
-            var I = std.ArrayList(u64).init(self.alloc);
-            defer I.deinit();
-
-            var items_ = self.items();
-            while (items_.next()) |item| {
-                try L.append(0);
-                if (keyIsString) {
-                    for (0..self.giveSize(item.key)) |_| {
-                        try L.append(1);
-                    }
-                } else {
-                    for (0..self.giveSize(@bitCast(item.key))) |_| {
-                        try L.append(1);
-                    }
-                }
-            }
-
-            for (1..L.items.len) |i| {
-                if (L.items[i] != 0 and L.items[i - 1] == 0) {
-                    try I.append(i);
-                }
-            }
-
-            var temp_index: u64 = 0;
-            var node: *Node = undefined;
-
-            while (temp.parent != null) {
-                node = temp.parent.?;
-                while (!eql(node.next.?.item.key, MAXSIZE)) {
-                    var index: u64 = I.items[node.next.?.width + width -| 1];
-
-                    var key_len: u64 = if (keyIsString) self.giveSize(node.item.key) else self.giveSize(@bitCast(node.item.key));
-
-                    if (node.prev == null) {
-                        key_len = 1;
-                    }
-
-                    var span: u64 = index - key_len - if (node.prev != null) temp_index else temp_index -| 1;
-                    for (0..span) |_| {
-                        std.debug.print("_", .{});
-                    }
-                    if (!keyIsString) {
-                        std.debug.print("{}", .{absCast(node.next.?.item.key)});
-                    } else std.debug.print("{s}", .{node.next.?.item.key});
-
-                    key_len = if (!keyIsString) self.giveSize(@bitCast(node.next.?.item.key)) else self.giveSize(node.next.?.item.key);
-
-                    if (eql(node.next.?.item.key, MAXSIZE)) {
-                        key_len = 2;
-                    }
-
-                    for (0..L.items.len - (index + key_len)) |_| {
-                        if (eql(node.next.?.next.?.item.key, MAXSIZE)) {
-                            std.debug.print("_", .{});
-                        } else {
-                            std.debug.print("", .{});
-                        }
-                    }
-                    temp_index = index;
-                    width += node.next.?.width;
-                    node = node.next.?;
-                }
-                temp = temp.parent.?;
-                width = 0;
-                temp_index = 0;
-                std.debug.print("\n", .{});
-            }
-        }
-        fn giveSize(self: *Self, num: KEY) usize {
-            _ = self;
-            if (!keyIsString) {
-                var size: usize = 0;
-                var num_ = absCast(num);
-                if (num_ == 0) return 1;
-
-                while (num_ != 0) : (size += 1) {
-                    num_ = @divFloor(num_, 10);
-                }
-                return size;
-            }
-            return num.len;
-        }
-        /// Educational function.
-        ///
-        /// Prints down MAP's vertical representation.
-        /// Works correctly only if the list has no duplicate keys, therefore
-        /// must be prevented from running if the list is not .set.
-        /// Don't use this function.
-        fn printVerticalDownForm(self: *Self) !void {
-            if (@typeInfo(KEY) == .Float)
-                @compileError("printVerticalDownForm() works only with integer keys and strings");
-            std.debug.print("\n", .{});
-
-            var items_ = self.items();
-            while (items_.next()) |item__| {
-                var stack = try self.getLevelStack(item__.key);
-
-                var node__ = stack.getLast();
-                for (0..stack.items.len) |_| {
-                    var node = stack.pop();
-
-                    if (eql(node__.item.key, node.item.key)) {
-                        std.debug.print("{d: >6}", .{node.item.key});
-                        std.debug.print("|{: <6}", .{node.width});
-                    }
-                }
-                std.debug.print("\n", .{});
-            }
-        }
-        /// Print to the screen the size of the current memory being used by the arena allocator
-        /// along with the cache's len.
-        pub fn arenaCacheSizeQuery(self: *Self) void {
-            std.debug.print("\narena size: {}, cache len: {}\n", .{
-                self.cache.arena.queryCapacity(),
-                self.cache.free.len,
-            });
-        }
-
         //////////////////// PUBLIC API //////////////////////
 
         /// Initiate the SortedMAP with the given allocator.
@@ -499,7 +356,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             try new.init(alloc);
             var self_items = self.items();
             while (self_items.next()) |item| {
-                // const key = if (!keyIsString) @as(KEY, @bitCast(item.key)) else item.key;
                 try new.put(item.key, item.value);
             }
             return new;
@@ -519,7 +375,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             try new.init(self.alloc);
             var self_items = self.items();
             while (self_items.next()) |item| {
-                // const key = if (!keyIsString) @as(KEY, @bitCast(item.key)) else item.key;
                 try new.put(item.key, item.value);
             }
             return new;
@@ -557,9 +412,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                     fringe = fringe.next.?;
                 }
             }
-
-            // Uncomment to know the size used by the arena allocator.
-            self.arenaCacheSizeQuery();
 
             // Re-Initiate the SortedMap's header and trailer
             try self.makeHeadAndTail();
@@ -691,7 +543,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         pub fn getFirst(self: *Self) VALUE {
             assert(self.size > 0);
             return self.groundLeft().item.value;
-            // return self.getItemByIndex(@as(i64, 0)).?.value;
         }
         ///
         ///  Remove an entry associated with the given key from the map.
@@ -745,7 +596,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             var stack: Stack = self.getLevelStack(key) catch unreachable;
             var item: Item = stack.getLast().*.item;
-            // var key_ = if (!keyIsString) @as(KEY, @bitCast(key)) else key;
             if (!keyIsString) {
                 if (!eql(item.key, key)) return null;
             } else {
@@ -1170,7 +1020,8 @@ var allocatorT = std.testing.allocator;
 const expect = std.testing.expect;
 
 test "SortedMap: simple" {
-    var sL: SortedMap(u64, u64, .set) = .{};
+    const SL = SortedMap(u64, u64, .set);
+    var sL: SL = .{};
     try sL.init(allocatorT);
     defer sL.deinit();
 
@@ -1196,6 +1047,8 @@ test "SortedMap: simple" {
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
+    const printAF = @import("debug.zig");
+    try printAF.printAbstractForm(&sL, u64, SL.MAXSIZE);
 }
 
 test "SortedMap: basics" {
