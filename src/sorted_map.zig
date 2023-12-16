@@ -1047,8 +1047,6 @@ test "SortedMap: simple" {
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
-    const printAF = @import("debug.zig");
-    try printAF.printAbstractForm(&sL, u64, SL.MAXSIZE);
 }
 
 test "SortedMap: basics" {
