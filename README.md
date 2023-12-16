@@ -128,9 +128,24 @@ Clone the Map. That is, rebuild the map anew yet from the sorted data.
 ### bench conclusions
 From the results, the performance of the SortedMap is close to that of hashmaps. Apart from the Rapid Grow test, which builds the SortedMap from the ground, doing the heaviest work, the given SortedMap is very much in league with modern map ADTs.
 
-Think of the SortedMap as your go to ADT whenever you need to have your keys always sorted and the indexed access is a must. 
+Think of the SortedMap as your go to ADT whenever you need to have your keys always sorted and the indexed access is a must.
 
-## How to install
+## How to run the benchmark
+```
+zig build bench
+```
+by default it runs 1000 rounds each test on `u64` type
+
+Give it a number to stress the map more
+```
+zig build bench -- 100_000
+```
+prepend with `-str` to test on `[8]u8` literal.
+```
+zig build bench -- 100_000 -str
+```
+
+## How to use it
 It is best to copy the `sorted_map.zig` and `cache.zig` into your project or make a fork and work from that.
 
 Declare in your file:
