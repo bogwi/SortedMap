@@ -5,8 +5,8 @@
 Sorted Map is a fast key-value table, an advance version of [skiplist ADT](https://en.wikipedia.org/wiki/Skip_list) as proposed by W.Pugh in 1989 for ordered mapping of keys to  values.
 
 ## Features 
-* Takes any numeric key but of the value less than `2^63-1`. 
-* Takes literal keys of type `[]const u8` of any length, but lexicographically smaller than `"ÿ"` ASCII 255. 
+* Takes any numeric 64-bit key except the maximum value `2^63-1`. 
+* Takes literal keys of type `[]const u8` and of any length, but lexicographically smaller than `"ÿ"` ASCII 255. 
 * Values are arbitrary values.
 * Works in `.set` or `.list` mode. The latter allows duplicate keys.
 * Has forward and backward iteration.
@@ -100,7 +100,7 @@ zig build bench -- 1_000_000 -str
 ```
 
 ## How to use it
-It is best to copy the `sorted_map.zig` and `cache.zig` into your project or make a fork and work from that.
+Copy `sorted_map.zig` and `cache.zig` into your project, or make a fork and work from there. Or you can import it as a dependency.
 
 Declare in your file:
 ```zig
@@ -119,6 +119,7 @@ Initiate for string literal keys:
 const map = SortedMap([]const u8, your_value_type, .set).init(your_allocator);
 defer map.deinit();
 ```
+
 
 ## zig version
 ```
