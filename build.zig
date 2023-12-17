@@ -3,9 +3,14 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
+    _ = b.addModule(
+        "SortedMap",
+        .{ .source_file = .{ .path = "src/sorted_map.zig" } },
+    );
+
     const lib = b.addStaticLibrary(.{
         .name = "skiplist",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = "src/sorted_map.zig" },
         .target = target,
         .optimize = .ReleaseSafe,
     });
