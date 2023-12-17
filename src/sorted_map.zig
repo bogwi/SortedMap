@@ -5,7 +5,6 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const eql = std.meta.eql;
 const sEql = std.mem.eql;
-const absCast = std.math.absCast;
 
 const MapMode = enum { set, list };
 
@@ -18,10 +17,8 @@ const MapMode = enum { set, list };
 /// Has a built-in cache for memory efficiency.
 ///
 /// IMPORTANT:
-/// (1) Numeric keys, integers or floats must fall within a range of
-/// min64(for the type) < user key < max64(for the type).
-/// However, the check is not enforced to avoid slowing down the `put' function.\
-/// (2) Literal keys are of type `[]const u8'. The maximum key size for literals is ASCII `255`, `"ÿ"`.
+/// (1) Numeric keys, integers or floats, must be **ALWAYS LESS THAN** `2^63 - 1`.\
+/// (2) Literal keys are of type `[]const u8`, **but ALWAYS LESS THAN** `"ÿ"` ASCII `255`.
 pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMode) type {
     const keyIsString: bool = comptime if (KEY == []const u8) true else false;
 
@@ -61,21 +58,20 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
         var mutex = std.Thread.Mutex{};
 
+        // Get random generator variables
+        var prng: std.rand.DefaultPrng = undefined;
+        var random: std.rand.Random = undefined;
+
         trailer: *Node = undefined,
         header: *Node = undefined,
         size: usize = 0,
         alloc: Allocator = undefined,
-        /// Coroutine control helper. No usage!
+        /// Coroutine control helper stack. No usage!
         stack: Stack = undefined,
         /// Stores all the nodes and manages their lifetime.
-        var cache: Cache = undefined;
+        cache: Cache = undefined,
 
         // NON-PUBLIC API, HELPER FUNCTIONS //
-
-        pub fn cache_(self: *Self) Cache {
-            _ = self;
-            return cache;
-        }
 
         fn gTE(lhs: anytype, rhs: anytype) bool {
             if (keyIsString) {
@@ -93,7 +89,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         }
 
         /// Creates the node
-        fn makeNode(item: Item, next: ?*Node, parent: ?*Node, width: usize, prev: ?*Node) !*Node {
+        fn makeNode(cache: *Cache, item: Item, next: ?*Node, parent: ?*Node, width: usize, prev: ?*Node) !*Node {
             var node: *Node = try cache.new();
             node.item = item;
             node.next = next;
@@ -102,19 +98,21 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             node.width = width;
             return node;
         }
-        // Get random generator variables
-        var prng: std.rand.DefaultPrng = undefined;
-        var random: std.rand.Random = undefined;
 
         fn makeHeadAndTail(self: *Self) !void {
             self.trailer = try makeNode(
+                &self.cache,
                 Item{ .key = MAXSIZE, .value = undefined },
                 null,
                 null,
                 0,
                 self.header,
             );
+            // Since we check the header with if header.prev == null, the header stores MAXSIZE instead of -MAXSIZE;
+            // mere convenience, all to avoid having signed_int keys if the client declared unsigned_int. Checking if null, degrades
+            // performance a bit, yet header checks are rare. However, trailer is checked by key.
             self.header = try makeNode(
+                &self.cache,
                 Item{ .key = MAXSIZE, .value = undefined },
                 self.trailer,
                 null,
@@ -124,14 +122,14 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         }
 
         fn insertNodeWithAllocation(self: *Self, item: Item, prev: ?*Node, parent: ?*Node, width: usize) !*Node {
-            _ = self;
-            prev.?.next.?.prev = try makeNode(item, prev.?.next, parent, width, prev);
+            prev.?.next.?.prev = try makeNode(&self.cache, item, prev.?.next, parent, width, prev);
             prev.?.next = prev.?.next.?.prev.?;
             return prev.?.next.?;
         }
 
         fn addNewLayer(self: *Self) !void {
             self.header = try makeNode(
+                &self.cache,
                 Item{ .key = MAXSIZE, .value = undefined },
                 self.trailer,
                 self.header,
@@ -140,14 +138,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             );
         }
 
-        fn initRnd() !void {
-            prng = std.rand.DefaultPrng.init(blk: {
-                var seed: u64 = undefined;
-                try std.os.getrandom(std.mem.asBytes(&seed));
-                break :blk seed;
-            });
-            random = prng.random();
-        }
         fn height(self: *Self) usize {
             var node = self.header;
             var height_: usize = 0;
@@ -252,7 +242,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             return node.next.?;
         }
         fn groundRight(self: *Self) *Node {
-            var key = MAXSIZE;
+            const key = MAXSIZE;
             var node = self.header;
             while (node.parent != null) {
                 node = node.parent.?;
@@ -263,7 +253,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             return node;
         }
         fn removeLoop(self: *Self, key: KEY, stack: *Stack) void {
-            _ = self;
             while (stack.items.len > 0) {
                 var node: *Node = stack.pop();
                 if (!keyIsString) {
@@ -273,7 +262,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                         }
                         node.prev.?.next = node.next.?;
                         node.next.?.prev = node.prev.?;
-                        cache.reuse(node); // reuse allocated memory
+                        self.cache.reuse(node); // reuse allocated memory
                     } else {
                         node.next.?.width -|= 1;
                     }
@@ -284,7 +273,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                         }
                         node.prev.?.next = node.next.?;
                         node.next.?.prev = node.prev.?;
-                        cache.reuse(node); // reuse allocated memory
+                        self.cache.reuse(node); // reuse allocated memory
                     } else {
                         node.next.?.width -|= 1;
                     }
@@ -292,8 +281,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             }
         }
         fn getNodePtrByIndex(self: *Self, index: i64) ?*Node {
-            if (absCast(index) >= self.size) return null;
-            var index_: u64 = if (index < 0) self.size - absCast(index) else absCast(index);
+            if (@abs(index) >= self.size) return null;
+            var index_: u64 = if (index < 0) self.size - @abs(index) else @abs(index);
 
             var node = self.header;
             index_ += 1;
@@ -312,20 +301,22 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Initiate the SortedMAP with the given allocator.
         pub fn init(alloc: Allocator) !Self {
             // Initiate random generator
-            try initRnd();
+            prng = std.rand.DefaultPrng.init(blk: {
+                var seed: u64 = undefined;
+                try std.os.getrandom(std.mem.asBytes(&seed));
+                break :blk seed;
+            });
+            random = prng.random();
 
-            // Init the Allocator wrapper for storing nodes
-            // cache.arena = std.heap.ArenaAllocator.init(alloc);
-            // cache = Cache.init(alloc);
-            cache = Cache.init(alloc);
+            // Initiate Cache
+            var cache = Cache.init(alloc);
 
-            // Initiate the SortedMap's header and trailer
-            // try self.makeHeadAndTail();
-            // try self.addNewLayer();
+            // Initiate header and trailer
             var trailer: *Node = undefined;
             var header: *Node = undefined;
 
             trailer = try makeNode(
+                &cache,
                 Item{ .key = MAXSIZE, .value = undefined },
                 null,
                 null,
@@ -333,6 +324,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 header,
             );
             header = try makeNode(
+                &cache,
                 Item{ .key = MAXSIZE, .value = undefined },
                 trailer,
                 null,
@@ -340,6 +332,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 null,
             );
             header = try makeNode(
+                &cache,
                 Item{ .key = MAXSIZE, .value = undefined },
                 trailer,
                 header,
@@ -347,10 +340,13 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 null,
             );
 
-            // self.stack = Stack.init(alloc);
-            // self.alloc = alloc;
-
-            return .{ .stack = Stack.init(alloc), .alloc = alloc, .trailer = trailer, .header = header };
+            return .{
+                .stack = Stack.init(alloc),
+                .alloc = alloc,
+                .trailer = trailer,
+                .header = header,
+                .cache = cache,
+            };
         }
 
         /// De-initialize the map.
@@ -359,7 +355,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             defer mutex.unlock();
 
             self.stack.deinit();
-            cache.deinit();
+            self.cache.deinit();
         }
 
         /// Clone the Skiplist, using the given allocator. The operation is O(n*log(n)).
@@ -372,8 +368,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Requires `deinit()`.
         pub fn cloneWithAllocator(self: *Self, alloc: Allocator) !Self {
-            var new: Self = .{};
-            try new.init(alloc);
+            var new: Self = try init(alloc);
             var self_items = self.items();
             while (self_items.next()) |item| {
                 try new.put(item.key, item.value);
@@ -391,8 +386,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Requires `deinit()`.
         pub fn clone(self: *Self) !Self {
-            // var new: Self = undefined;
-            var new = try SortedMap(KEY, VALUE, mode).init(self.alloc);
+            var new: Self = try init(self.alloc);
             var self_items = self.items();
             while (self_items.next()) |item| {
                 try new.put(item.key, item.value);
@@ -405,8 +399,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             mutex.lock();
             defer mutex.unlock();
 
-            cache.clear();
-            _ = cache.arena.reset(.free_all);
+            self.cache.clear();
+            _ = self.cache.arena.reset(.free_all);
 
             // Re-Initiate the SortedMap's header and trailer
             try self.makeHeadAndTail();
@@ -423,12 +417,12 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             // Reuse all the list
             var node: *Node = self.header;
-            cache.reuse(node);
+            self.cache.reuse(node);
             while (node.parent != null) {
                 node = node.parent.?;
                 var fringe = node;
                 while (!eql(fringe.next.?.item.key, MAXSIZE)) {
-                    cache.reuse(fringe);
+                    self.cache.reuse(fringe);
                     fringe = fringe.next.?;
                 }
             }
@@ -596,12 +590,12 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             mutex.lock();
             defer mutex.unlock();
 
-            if (absCast(index) > self.size) return null;
-            var index_: u64 = if (index < 0) self.size -| absCast(index) else absCast(index);
+            if (@abs(index) > self.size) return null;
+            const index_: u64 = if (index < 0) self.size -| @abs(index) else @abs(index);
 
             var stack: Stack = self.getLevelStackByIndex(index_) catch unreachable;
-            var item: Item = stack.getLast().*.item;
-            var key = item.key;
+            const item: Item = stack.getLast().*.item;
+            const key = item.key;
 
             self.removeLoop(key, &stack);
             self.size -|= 1;
@@ -615,7 +609,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             defer mutex.unlock();
 
             var stack: Stack = self.getLevelStack(key) catch unreachable;
-            var item: Item = stack.getLast().*.item;
+            const item: Item = stack.getLast().*.item;
             if (!keyIsString) {
                 if (!eql(item.key, key)) return null;
             } else {
@@ -656,7 +650,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
                 var node: *Node = s_node;
                 if (s_node.prev != null and !EQL(s_node.item.key, MAXSIZE))
-                    cache.reuse(s_node); // reuse allocated memory
+                    self.cache.reuse(s_node); // reuse allocated memory
 
                 var width: u64 = node.width;
 
@@ -664,7 +658,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                     node = node.next.?;
                     width += node.width;
                     if (!EQL(node.item.key, MAXSIZE))
-                        cache.reuse(node); // reuse allocated memory for each layer
+                        self.cache.reuse(node); // reuse allocated memory for each layer
                 }
                 if (node.parent == null) {
                     to_delete = width;
@@ -697,8 +691,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             if (start >= self.size) return false;
 
-            var start_: u64 = if (start < 0) self.size -| absCast(start) else absCast(start);
-            var stop_: u64 = if (stop < 0) self.size -| absCast(stop) else absCast(stop);
+            const start_: u64 = if (start < 0) self.size -| @abs(start) else @abs(start);
+            var stop_: u64 = if (stop < 0) self.size -| @abs(stop) else @abs(stop);
 
             if (stop >= self.size)
                 stop_ = self.size;
@@ -720,7 +714,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
                 var node: *Node = s_node;
                 if (s_node.prev != null and !EQL(s_node.item.key, MAXSIZE))
-                    cache.reuse(s_node); // reuse allocated memory
+                    self.cache.reuse(s_node); // reuse allocated memory
 
                 var width: u64 = node.width;
 
@@ -728,7 +722,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                     node = node.next.?;
                     width += node.width;
                     if (!EQL(node.item.key, MAXSIZE))
-                        cache.reuse(node); // reuse allocated memory
+                        self.cache.reuse(node); // reuse allocated memory
                 }
                 if (node.parent == null)
                     width = 0;
@@ -764,7 +758,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             pub fn prev(self: *ReverseIterator) ?Item {
                 while (self.grr.prev != null) {
-                    var node__ = self.grr;
+                    const node__ = self.grr;
                     self.grr = node__.prev.?;
                     return node__.item;
                 }
@@ -787,7 +781,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             pub fn next(self: *Iterator) ?Item {
                 while (!eql(self.gr.item.key, MAXSIZE)) {
-                    var node__ = self.gr;
+                    const node__ = self.gr;
                     self.gr = node__.next.?;
                     return node__.item;
                 }
@@ -907,11 +901,11 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 if (stop < -@as(i64, @bitCast(self.size)))
                     stop_ = 0;
 
-                var sni = SliceNodeIterator{
+                const sni = SliceNodeIterator{
                     .start = node,
-                    .stop = if (stop_ < 0) self.size - absCast(stop_) else absCast(stop_),
+                    .stop = if (stop_ < 0) self.size - @abs(stop_) else @abs(stop_),
                     .step = step,
-                    .fringe = if (start < 0) self.size - absCast(start) else absCast(start),
+                    .fringe = if (start < 0) self.size - @abs(start) else @abs(start),
                     .step2 = if (step > 0) @as(i64, 0) else step,
                 };
                 return SliceIterator{ .sni = sni };
@@ -949,7 +943,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                             self.fringe += 1;
                             self.step2 += 1;
 
-                            var node = self.start;
+                            const node = self.start;
                             self.start = node.next.?;
                             return node;
                         } else {
@@ -965,7 +959,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                             self.fringe -|= 1;
                             self.step2 -= 1;
 
-                            var node = self.start;
+                            const node = self.start;
                             self.start = node.prev.?;
                             return node;
                         } else {
@@ -976,7 +970,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                         }
                     }
                 }
-                // std.debug.print("fringe: {}, stop: {}\n", .{ self.fringe, self.stop });
                 return null;
             }
         };
@@ -1040,8 +1033,8 @@ var allocatorT = std.testing.allocator;
 const expect = std.testing.expect;
 
 test "SortedMap: simple" {
-    var sL = try SortedMap(u64, u64, .set).init(allocatorT);
-    defer sL.deinit();
+    var map = try SortedMap(u64, u64, .set).init(allocatorT);
+    defer map.deinit();
 
     var keys = std.ArrayList(u64).init(allocatorT);
     defer keys.deinit();
@@ -1056,20 +1049,20 @@ test "SortedMap: simple" {
 
     random.shuffle(u64, keys.items);
     for (keys.items) |v| {
-        try sL.put(v, v);
-        try sL.put(v, v + 2);
+        try map.put(v, v);
+        try map.put(v, v + 2);
     }
 
-    try expect(sL.size == 32);
-    var items = sL.items();
+    try expect(map.size == 32);
+    var items = map.items();
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
 }
 
 test "SortedMap: basics" {
-    var sL = try SortedMap(i64, i64, .list).init(allocatorT);
-    defer sL.deinit();
+    var map = try SortedMap(i64, i64, .list).init(allocatorT);
+    defer map.deinit();
 
     var keys = std.ArrayList(i64).init(allocatorT);
     defer keys.deinit();
@@ -1085,140 +1078,140 @@ test "SortedMap: basics" {
     random.shuffle(i64, keys.items);
 
     for (keys.items) |v| {
-        try sL.put(v, v);
+        try map.put(v, v);
     }
 
-    try expect(sL.median() == 8);
+    try expect(map.median() == 8);
 
-    var step: i64 = 1;
-    var slice = try sL.getSlice(-12, 16, step);
+    const step: i64 = 1;
+    var slice = try map.getSlice(-12, 16, step);
     var start: i64 = 16 - 12;
     while (slice.next()) |item| : (start += 1)
         try expect(start == item.key);
 
-    try expect(sL.update(6, 66));
-    try expect(sL.updateByIndex(-1, 1551));
+    try expect(map.update(6, 66));
+    try expect(map.updateByIndex(-1, 1551));
 
-    try expect(sL.size == k);
-    try expect(sL.trailer.width == 0);
-    try expect(sL.min() == 0);
-    try expect(sL.getFirst() == 0);
+    try expect(map.size == k);
+    try expect(map.trailer.width == 0);
+    try expect(map.min() == 0);
+    try expect(map.getFirst() == 0);
 
-    try expect(sL.getItem(11).?.value == sL.get(11).?);
-    try expect(sL.getItemByIndex(11).?.value == sL.getByIndex(-5).?);
-    try expect(sL.getItemByIndex(-11).?.value == sL.getByIndex(5).?);
+    try expect(map.getItem(11).?.value == map.get(11).?);
+    try expect(map.getItemByIndex(11).?.value == map.getByIndex(-5).?);
+    try expect(map.getItemByIndex(-11).?.value == map.getByIndex(5).?);
 
-    try expect(sL.max() == 1551);
-    try expect(sL.updateByIndex(-1, 15));
-    try expect(sL.max() == k - 1);
+    try expect(map.max() == 1551);
+    try expect(map.updateByIndex(-1, 15));
+    try expect(map.max() == k - 1);
 
-    try sL.setSliceToValue(0, 5, 1, 99);
+    try map.setSliceToValue(0, 5, 1, 99);
 
-    var itemsR = sL.itemsReversed();
+    var itemsR = map.itemsReversed();
     start = 15;
     while (itemsR.prev()) |item| : (start -= 1) {
         if (start < 5)
             try expect(item.value == @as(i64, 99));
     }
 
-    try expect(sL.remove(26) == false);
-    try expect(sL.remove(6) == (sL.size == k - 1));
-    try expect(sL.remove(0) == (sL.size == k - 2));
-    try expect(!sL.contains(0));
-    try expect(sL.remove(6) == false);
+    try expect(map.remove(26) == false);
+    try expect(map.remove(6) == (map.size == k - 1));
+    try expect(map.remove(0) == (map.size == k - 2));
+    try expect(!map.contains(0));
+    try expect(map.remove(6) == false);
 
-    try expect(sL.remove(1) == (sL.size == k - 3));
-    try expect(!sL.contains(1));
-    try expect(sL.remove(12) == (sL.size == k - 4));
-    try expect(!sL.contains(12));
+    try expect(map.remove(1) == (map.size == k - 3));
+    try expect(!map.contains(1));
+    try expect(map.remove(12) == (map.size == k - 4));
+    try expect(!map.contains(12));
 
-    try expect(sL.remove(3) == (sL.size == k - 5));
-    try expect(sL.remove(14) == (sL.size == k - 6));
-    try expect(sL.getItem(14) == null);
+    try expect(map.remove(3) == (map.size == k - 5));
+    try expect(map.remove(14) == (map.size == k - 6));
+    try expect(map.getItem(14) == null);
 
-    try sL.put(6, 6);
-    try expect(sL.contains(6));
-    try sL.put(3, 3);
-    try expect(sL.contains(3));
-    try sL.put(14, 14);
-    try expect(sL.contains(14));
+    try map.put(6, 6);
+    try expect(map.contains(6));
+    try map.put(3, 3);
+    try expect(map.contains(3));
+    try map.put(14, 14);
+    try expect(map.contains(14));
 
-    try expect(sL.removeByIndex(9) == true);
+    try expect(map.removeByIndex(9) == true);
 
-    try expect(sL.fetchRemove(9).?.key == 9);
-    try expect(sL.getItemByIndex(9).?.key == sL.fetchRemoveByIndex(9).?.key);
+    try expect(map.fetchRemove(9).?.key == 9);
+    try expect(map.getItemByIndex(9).?.key == map.fetchRemoveByIndex(9).?.key);
 
-    try expect(sL.getItemByIndex(0).?.key == sL.fetchRemoveByIndex(0).?.key);
-    try expect(sL.getItemByIndex(0).?.key == sL.fetchRemoveByIndex(0).?.key);
-    try expect(sL.getItemByIndex(0).?.key == sL.fetchRemoveByIndex(0).?.key);
-    try expect(sL.getItemByIndex(0).?.key == sL.fetchRemoveByIndex(0).?.key);
-    try expect(sL.getItemByIndex(0).?.key == sL.fetchRemoveByIndex(0).?.key);
+    try expect(map.getItemByIndex(0).?.key == map.fetchRemoveByIndex(0).?.key);
+    try expect(map.getItemByIndex(0).?.key == map.fetchRemoveByIndex(0).?.key);
+    try expect(map.getItemByIndex(0).?.key == map.fetchRemoveByIndex(0).?.key);
+    try expect(map.getItemByIndex(0).?.key == map.fetchRemoveByIndex(0).?.key);
+    try expect(map.getItemByIndex(0).?.key == map.fetchRemoveByIndex(0).?.key);
 
     for (keys.items) |v| {
-        try sL.put(v + 50, v + 50);
+        try map.put(v + 50, v + 50);
     }
 
     for (keys.items) |v| {
-        try sL.put(v, v);
+        try map.put(v, v);
     }
 
-    // var clone = try sL.clone();
-    // defer clone.deinit();
+    var clone = try map.clone();
+    defer clone.deinit();
 
-    // for (keys.items) |v| {
-    //     try clone.put(v, v);
-    // }
-    // var clone_size = clone.size;
-    // try expect(true == try clone.removeSliceByIndex(2, 10));
-    // try expect(clone.size == clone_size - 8);
+    for (keys.items) |v| {
+        try clone.put(v, v);
+    }
+    var clone_size = clone.size;
+    try expect(true == try clone.removeSliceByIndex(2, 10));
+    try expect(clone.size == clone_size - 8);
 
-    // for (keys.items) |v| {
-    //     try clone.put(v - 100 * 3, v);
-    // }
+    for (keys.items) |v| {
+        try clone.put(v - 100 * 3, v);
+    }
 
-    // clone_size = clone.size;
-    // try expect(true == try clone.removeSliceByIndex(2, 20));
-    // clone_size -|= 18;
-    // try expect(clone.size == clone_size);
+    clone_size = clone.size;
+    try expect(true == try clone.removeSliceByIndex(2, 20));
+    clone_size -|= 18;
+    try expect(clone.size == clone_size);
 
-    // try expect(true == try clone.removeSlice(8, 50));
-    // try expect(true == try clone.removeSliceByIndex(-21, @bitCast(clone.size - 10)));
-    // try expect(true == try clone.removeSliceByIndex(-21, -10));
+    try expect(true == try clone.removeSlice(8, 50));
+    try expect(true == try clone.removeSliceByIndex(-21, @bitCast(clone.size - 10)));
+    try expect(true == try clone.removeSliceByIndex(-21, -10));
 
-    // clone_size = clone.size;
-    // _ = clone.popOrNull();
-    // _ = clone.pop();
-    // _ = clone.pop();
-    // _ = clone.popFirstOrNull();
-    // _ = clone.popFirst();
-    // _ = clone.popFirst();
-    // _ = clone.popFirst();
-    // _ = clone.popFirstOrNull();
-    // _ = clone.popFirstOrNull();
-    // try expect(clone.size == clone_size - 9);
+    clone_size = clone.size;
+    _ = clone.popOrNull();
+    _ = clone.pop();
+    _ = clone.pop();
+    _ = clone.popFirstOrNull();
+    _ = clone.popFirst();
+    _ = clone.popFirst();
+    _ = clone.popFirst();
+    _ = clone.popFirstOrNull();
+    _ = clone.popFirstOrNull();
+    try expect(clone.size == clone_size - 9);
 
-    // try expect(clone.median() == @as(i64, 62));
-    // try expect(clone.getFirst() == @as(i64, 62));
-    // try expect(clone.getLast() == @as(i64, 62));
-    // try expect(clone.size == 1);
+    try expect(clone.median() == @as(i64, 62));
+    try expect(clone.getFirst() == @as(i64, 62));
+    try expect(clone.getLast() == @as(i64, 62));
+    try expect(clone.size == 1);
 
-    // for (keys.items) |v| {
-    //     try clone.put(v - 100 * 3, v - 100 * 3);
-    // }
+    for (keys.items) |v| {
+        try clone.put(v - 100 * 3, v - 100 * 3);
+    }
 
-    // const query: i64 = -299;
-    // try expect(clone.get(query) == clone.getByIndex(clone.getItemIndexByKey(query).?));
-    // try expect(clone.getItemIndexByKey(query - 100) == null);
-    // try expect(clone.getItemIndexByKey(query * -1) == null);
-    // try expect(clone.getItemIndexByKey(query - 1) != null);
+    const query: i64 = -299;
+    try expect(clone.get(query) == clone.getByIndex(clone.getItemIndexByKey(query).?));
+    try expect(clone.getItemIndexByKey(query - 100) == null);
+    try expect(clone.getItemIndexByKey(query * -1) == null);
+    try expect(clone.getItemIndexByKey(query - 1) != null);
 
-    // try expect(clone.getFirstOrNull().? == @as(i64, -300));
-    // try expect(clone.getLastOrNull().? == @as(i64, 62));
+    try expect(clone.getFirstOrNull().? == @as(i64, -300));
+    try expect(clone.getLastOrNull().? == @as(i64, 62));
 }
 
 test "SortedMap: floats" {
-    var sL = try SortedMap(f64, f64, .set).init(allocatorT);
-    defer sL.deinit();
+    var map = try SortedMap(f64, f64, .set).init(allocatorT);
+    defer map.deinit();
 
     var keys = std.ArrayList(f64).init(allocatorT);
     defer keys.deinit();
@@ -1234,55 +1227,55 @@ test "SortedMap: floats" {
     random.shuffle(f64, keys.items);
 
     for (keys.items) |key| {
-        try sL.put(key, key + 100);
+        try map.put(key, key + 100);
     }
 
-    try expect(sL.getFirst() == sL.min());
-    try expect(sL.getLast() == sL.max());
-    try expect(sL.median() == @divFloor(k, 2) + 100);
+    try expect(map.getFirst() == map.min());
+    try expect(map.getLast() == map.max());
+    try expect(map.median() == @divFloor(k, 2) + 100);
 
     //  stop value > map length, rolls down to map length
-    try expect(true == try sL.removeSliceByIndex(@as(i64, 8), @as(i64, 88)));
-    try expect(sL.max() == @divFloor(k - 1, 2) + 100);
-    try expect(sL.median() == @divFloor(k, 4) + 100);
-    try expect(true == sL.remove(@as(f64, 7)));
-    try expect(true != sL.remove(@as(f64, 7)));
+    try expect(true == try map.removeSliceByIndex(@as(i64, 8), @as(i64, 88)));
+    try expect(map.max() == @divFloor(k - 1, 2) + 100);
+    try expect(map.median() == @divFloor(k, 4) + 100);
+    try expect(true == map.remove(@as(f64, 7)));
+    try expect(true != map.remove(@as(f64, 7)));
 
-    try expect(true == sL.remove(@as(f64, 6)));
-    try expect(true == sL.remove(@as(f64, 0)));
-    try expect(true == sL.remove(@as(f64, 5)));
-    try expect(true == sL.remove(@as(f64, 1)));
-    try expect(true == sL.remove(@as(f64, 3)));
-    try expect(true == sL.remove(@as(f64, 4)));
+    try expect(true == map.remove(@as(f64, 6)));
+    try expect(true == map.remove(@as(f64, 0)));
+    try expect(true == map.remove(@as(f64, 5)));
+    try expect(true == map.remove(@as(f64, 1)));
+    try expect(true == map.remove(@as(f64, 3)));
+    try expect(true == map.remove(@as(f64, 4)));
 
-    try expect(sL.size == 1);
-    try expect((sL.median() == sL.min()) == (@as(f64, 2 + 100) == sL.max()));
+    try expect(map.size == 1);
+    try expect((map.median() == map.min()) == (@as(f64, 2 + 100) == map.max()));
 
-    try expect(sL.removeByIndex(@as(i64, 0)));
-    try expect(!sL.removeByIndex(@as(i64, 0)));
-    try expect(sL.size == 0);
+    try expect(map.removeByIndex(@as(i64, 0)));
+    try expect(!map.removeByIndex(@as(i64, 0)));
+    try expect(map.size == 0);
 }
 
-test "SortedMap: a string as a key" {
-    var sL = try SortedMap([]const u8, u64, .set).init(allocatorT);
-    defer sL.deinit();
+test "SortedMap: a string literal as a key" {
+    var map = try SortedMap([]const u8, u64, .set).init(allocatorT);
+    defer map.deinit();
 
-    var HeLlo = "HeLlo";
-    var HeLLo = "HeLLo";
-    var HeLLo2 = "HeLLo";
-    var hello = "hello";
-    var hello2 = "hello";
+    const HeLlo = "HeLlo";
+    const HeLLo = "HeLLo";
+    const HeLLo2 = "HeLLo";
+    const hello = "hello";
+    const hello2 = "hello";
 
-    try sL.put(HeLLo, 0);
-    try sL.put(HeLlo, 1);
-    try sL.put(hello, 2);
-    try sL.put(hello2, 3);
-    try expect(sL.getFirst() == 0);
-    try sL.put(HeLLo2, 4);
+    try map.put(HeLLo, 0);
+    try map.put(HeLlo, 1);
+    try map.put(hello, 2);
+    try map.put(hello2, 3);
+    try expect(map.getFirst() == 0);
+    try map.put(HeLLo2, 4);
 
-    try expect(sL.getFirst() == 4);
+    try expect(map.getFirst() == 4);
 
-    try sL.clearAndFree();
+    try map.clearAndFree();
 
     var message = "Zig is a general-purpose programming language and toolchain for maintaining robust, optimal and reusable software";
 
@@ -1290,34 +1283,34 @@ test "SortedMap: a string as a key" {
     var counter: u64 = 0;
     for (message, 0..) |char, idx| {
         if (char == 32) {
-            var key = if (message[idx -| 1] == 44) message[old_idx..idx -| 1] else message[old_idx..idx];
-            try sL.put(key, counter);
+            const key = if (message[idx -| 1] == 44) message[old_idx..idx -| 1] else message[old_idx..idx];
+            try map.put(key, counter);
             old_idx = idx + 1;
             counter += 1;
         }
     }
-    try sL.put(message[old_idx..], counter + 1);
+    try map.put(message[old_idx..], counter + 1);
 
-    try expect(sL.get("Zig") == 0);
-    try expect(sL.getItemIndexByKey("Zig") == @as(i64, 0));
-    try expect(sL.contains("Zig"));
-    try expect(sL.removeByIndex(0));
-    try expect(!sL.contains("Zig"));
-    try expect(sEql(u8, sL.getItemByIndex(0).?.key, "a"));
-    try expect(sL.get("a") == 2);
-    try expect(sL.getItemIndexByKey("toolchain") == @as(i64, @bitCast(sL.size - 1)));
+    try expect(map.get("Zig") == 0);
+    try expect(map.getItemIndexByKey("Zig") == @as(i64, 0));
+    try expect(map.contains("Zig"));
+    try expect(map.removeByIndex(0));
+    try expect(!map.contains("Zig"));
+    try expect(sEql(u8, map.getItemByIndex(0).?.key, "a"));
+    try expect(map.get("a") == 2);
+    try expect(map.getItemIndexByKey("toolchain") == @as(i64, @bitCast(map.size - 1)));
 
-    try expect(try sL.removeSliceByIndex(-7, 20)); // will trim the message from the right
-    try expect(sL.size == 6);
-    try expect(sL.max() == 5);
-    try expect(sL.removeByIndex(@bitCast(sL.size - 1)));
-    try expect(sL.size == 5);
-    try expect(sL.remove("is"));
-    try expect(sL.size == 4);
+    try expect(try map.removeSliceByIndex(-7, 20)); // will trim the message from the right
+    try expect(map.size == 6);
+    try expect(map.max() == 5);
+    try expect(map.removeByIndex(@bitCast(map.size - 1)));
+    try expect(map.size == 5);
+    try expect(map.remove("is"));
+    try expect(map.size == 4);
 
-    try expect(try sL.removeSlice("and", "general-purpose"));
-    try expect(sL.removeByIndex(@as(i64, 0)));
-    try expect(sEql(u8, sL.getItemByIndex(0).?.key, "general-purpose"));
-    try expect(sL.getByIndex(@as(i64, 0)) == 3);
-    try expect(sL.size == 1);
+    try expect(try map.removeSlice("and", "general-purpose"));
+    try expect(map.removeByIndex(@as(i64, 0)));
+    try expect(sEql(u8, map.getItemByIndex(0).?.key, "general-purpose"));
+    try expect(map.getByIndex(@as(i64, 0)) == 3);
+    try expect(map.size == 1);
 }
