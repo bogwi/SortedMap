@@ -10,20 +10,21 @@ const MapMode = enum { set, list };
 
 /// A contiguous, growable map of key-value pairs in memory, sorted by key.
 ///
-/// Put and get operations are expected to be nlog(n). Slice and range operations are supported.
 /// Keys can be numeric or literal. Values, any type.
+/// When keys are string literals, it sorts lexicographically.
+/// Slice and range operations are supported.
 /// Works as either `.set` or `.list`; just pass the enum as the `mode` argument.
 /// The `.list` mode allows duplicate keys.
-/// Has a built-in cache for memory efficiency.
 ///
-/// IMPORTANT:
-/// (1) Numeric keys, integers or floats, must be **ALWAYS LESS THAN** `2^63 - 1`.\
-/// (2) Literal keys are of type `[]const u8`, **but ALWAYS LESS THAN** `"ÿ"` ASCII `255`.
+/// IMPORTANT: Takes any numeric key except the maximum possible value for the given type.
+/// Takes any literal key of type `[]const u8` and of any length,
+///  but lexicographically smaller than `"ÿ"` ASCII 255.
+///
 pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMode) type {
     const keyIsString: bool = comptime if (KEY == []const u8) true else false;
 
     return struct {
-        const MAXSIZE = if (keyIsString) @as([]const u8, "ÿ") else if ((@typeInfo(KEY) == .Int) or (@typeInfo(KEY) == .Float)) @as(KEY, @bitCast(std.math.inf(f64))) else @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
+        const MAXSIZE = if (keyIsString) @as([]const u8, "ÿ") else if (@typeInfo(KEY) == .Int) std.math.maxInt(KEY) else if (@typeInfo(KEY) == .Float) std.math.inf(KEY) else @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
 
         /// A field struct containing a key-value pair.
         ///
@@ -108,9 +109,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 0,
                 self.header,
             );
-            // Since we check the header with if header.prev == null, the header stores MAXSIZE instead of -MAXSIZE;
-            // mere convenience, all to avoid having signed_int keys if the client declared unsigned_int. Checking if null, degrades
-            // performance a bit, yet header checks are rare. However, trailer is checked by key.
             self.header = try makeNode(
                 &self.cache,
                 Item{ .key = MAXSIZE, .value = undefined },
@@ -242,11 +240,10 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             return node.next.?;
         }
         fn groundRight(self: *Self) *Node {
-            const key = MAXSIZE;
             var node = self.header;
             while (node.parent != null) {
                 node = node.parent.?;
-                while (gT(key, node.next.?.item.key)) {
+                while (gT(MAXSIZE, node.next.?.item.key)) {
                     node = node.next.?;
                 }
             }
@@ -1033,21 +1030,21 @@ var allocatorT = std.testing.allocator;
 const expect = std.testing.expect;
 
 test "SortedMap: simple" {
-    var map = try SortedMap(u64, u64, .set).init(allocatorT);
+    var map = try SortedMap(u128, u128, .set).init(allocatorT);
     defer map.deinit();
 
-    var keys = std.ArrayList(u64).init(allocatorT);
+    var keys = std.ArrayList(u128).init(allocatorT);
     defer keys.deinit();
 
     var prng = std.rand.DefaultPrng.init(0);
     const random = prng.random();
 
-    var k: u64 = 0;
+    var k: u128 = 0;
     while (k < 32) : (k += 1) {
         try keys.append(k);
     }
 
-    random.shuffle(u64, keys.items);
+    random.shuffle(u128, keys.items);
     for (keys.items) |v| {
         try map.put(v, v);
         try map.put(v, v + 2);
@@ -1213,24 +1210,27 @@ test "SortedMap: basics" {
 
     try expect(clone.getFirstOrNull().? == @as(i64, -300));
     try expect(clone.getLastOrNull().? == @as(i64, 62));
+
+    try clone.put(std.math.maxInt(i64) - 1, std.math.maxInt(i64));
+    try expect(clone.max() == std.math.maxInt(i64));
 }
 
 test "SortedMap: floats" {
-    var map = try SortedMap(f64, f64, .set).init(allocatorT);
+    var map = try SortedMap(f128, f128, .set).init(allocatorT);
     defer map.deinit();
 
-    var keys = std.ArrayList(f64).init(allocatorT);
+    var keys = std.ArrayList(f128).init(allocatorT);
     defer keys.deinit();
 
     var prng = std.rand.DefaultPrng.init(0);
     const random = prng.random();
 
-    var k: f64 = 0;
+    var k: f128 = 0;
     while (k < 16) : (k += 1) {
         try keys.append(k);
     }
-    random.shuffle(f64, keys.items);
-    random.shuffle(f64, keys.items);
+    random.shuffle(f128, keys.items);
+    random.shuffle(f128, keys.items);
 
     for (keys.items) |key| {
         try map.put(key, key + 100);
@@ -1244,18 +1244,18 @@ test "SortedMap: floats" {
     try expect(true == try map.removeSliceByIndex(@as(i64, 8), @as(i64, 88)));
     try expect(map.max() == @divFloor(k - 1, 2) + 100);
     try expect(map.median() == @divFloor(k, 4) + 100);
-    try expect(true == map.remove(@as(f64, 7)));
-    try expect(true != map.remove(@as(f64, 7)));
+    try expect(true == map.remove(@as(f128, 7)));
+    try expect(true != map.remove(@as(f128, 7)));
 
-    try expect(true == map.remove(@as(f64, 6)));
-    try expect(true == map.remove(@as(f64, 0)));
-    try expect(true == map.remove(@as(f64, 5)));
-    try expect(true == map.remove(@as(f64, 1)));
-    try expect(true == map.remove(@as(f64, 3)));
-    try expect(true == map.remove(@as(f64, 4)));
+    try expect(true == map.remove(@as(f128, 6)));
+    try expect(true == map.remove(@as(f128, 0)));
+    try expect(true == map.remove(@as(f128, 5)));
+    try expect(true == map.remove(@as(f128, 1)));
+    try expect(true == map.remove(@as(f128, 3)));
+    try expect(true == map.remove(@as(f128, 4)));
 
     try expect(map.size == 1);
-    try expect((map.median() == map.min()) == (@as(f64, 2 + 100) == map.max()));
+    try expect((map.median() == map.min()) == (@as(f128, 2 + 100) == map.max()));
 
     try expect(map.removeByIndex(@as(i64, 0)));
     try expect(!map.removeByIndex(@as(i64, 0)));
