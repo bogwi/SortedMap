@@ -1058,6 +1058,12 @@ test "SortedMap: simple" {
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
+
+    try map.setSliceToValue(0, 32, 1, 444);
+    items.reset();
+    while (items.next()) |item| {
+        try expect(item.value == 444);
+    }
 }
 
 test "SortedMap: basics" {
