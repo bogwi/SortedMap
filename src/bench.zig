@@ -21,7 +21,7 @@ pub fn benchSTR(N: usize) !void {
     var keys = std.ArrayList([]const u8).init(allocatorA);
     defer keys.deinit();
 
-    var prng = std.rand.DefaultPrng.init(std.math.absCast(std.time.timestamp()));
+    var prng = std.rand.DefaultPrng.init(@abs(std.time.timestamp()));
     const random = prng.random();
 
     const T = [8]u8;
@@ -36,7 +36,7 @@ pub fn benchSTR(N: usize) !void {
 
     // Cosmetic function, number formatting
     var buffer: [16]u8 = undefined;
-    var len = pretty(N, &buffer, allocatorA);
+    const len = pretty(N, &buffer, allocatorA);
 
     // Print benchmark header
     try stdout.print("\n{s: >38}|", .{"SortedMap STR BENCHMARK"});
@@ -84,7 +84,7 @@ pub fn benchSTR(N: usize) !void {
     // Clear the sL
     assert(sL.size == 98);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // ------------------ EXCHANGE -------------------//
     // -- read 10, insert 40, remove 40, update 10 -- //
@@ -140,7 +140,7 @@ pub fn benchSTR(N: usize) !void {
     // Clear the sL
     assert(sL.size == 10);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // --------------- EXCHANGE HEAVY --------------//
     // -- read 1, insert 98, remove 98, update 1 -- //
@@ -196,7 +196,7 @@ pub fn benchSTR(N: usize) !void {
     // Clear the sL
     assert(sL.size == 1);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // ---------------- RAPID GROW -----------------//
     // -- read 5, insert 80, remove 5, update 10 -- //
@@ -248,30 +248,27 @@ pub fn benchSTR(N: usize) !void {
     // Print stats //
     // Test' individual stats
     try writeStamps("RG", N, time);
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // ---------------- CLONING -----------------//
     // ------ obtain a clone of the graph ------ //
 
     // Clear the time, re-start the timer
-    // time = 0;
-    // timer = try std.time.Timer.start();
-    // start = timer.lap();
+    time = 0;
+    timer = try std.time.Timer.start();
+    start = timer.lap();
 
-    // var clone = try sL.clone();
-    // defer clone.deinit();
+    var clone = try sL.clone();
+    defer clone.deinit();
 
-    // end = timer.read();
-    // time += end -| start;
-    // aggregate += time;
+    end = timer.read();
+    time += end -| start;
+    aggregate += time;
 
-    // // Print stats //
-    // // Test' individual stats
-    // try writeStamps("CLONE", clone.size, time);
+    // Print stats //
+    // Test' individual stats
+    try writeStamps("CLONE", clone.size, time);
 
-    // Aggregate stats
-    // try writeStamps("aggregate", N * 4 + clone.size, aggregate);
-    try writeStamps("aggregate", N * 4, aggregate);
     try stdout.print("\n", .{});
 }
 
@@ -283,7 +280,7 @@ pub fn benchU64(N: usize) !void {
     const allocatorG = gpa.allocator();
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    var allocatorA = arena.allocator();
+    const allocatorA = arena.allocator();
     defer arena.deinit();
 
     var sL = try SortedMap(u64, u64, .set).init(allocatorG);
@@ -295,7 +292,7 @@ pub fn benchU64(N: usize) !void {
     var keys = std.ArrayList(u64).init(allocatorA);
     defer keys.deinit();
 
-    var prng = std.rand.DefaultPrng.init(std.math.absCast(std.time.timestamp()));
+    var prng = std.rand.DefaultPrng.init(@abs(std.time.timestamp()));
     const random = prng.random();
 
     for (0..N) |key| {
@@ -305,7 +302,7 @@ pub fn benchU64(N: usize) !void {
 
     // Cosmetic function, number formatting
     var buffer: [16]u8 = undefined;
-    var len = pretty(N, &buffer, allocatorA);
+    const len = pretty(N, &buffer, allocatorA);
 
     // Print benchmark header
     try stdout.print("\n{s: >38}|", .{"SortedMap u64 BENCHMARK"});
@@ -352,7 +349,7 @@ pub fn benchU64(N: usize) !void {
     // Clear the sL
     assert(sL.size == 98);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // ------------------ EXCHANGE -------------------//
     // -- read 10, insert 40, remove 40, update 10 -- //
@@ -407,7 +404,7 @@ pub fn benchU64(N: usize) !void {
     // Clear the sL
     assert(sL.size == 10);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // --------------- EXCHANGE HEAVY --------------//
     // -- read 1, insert 98, remove 98, update 1 -- //
@@ -462,7 +459,7 @@ pub fn benchU64(N: usize) !void {
     // Clear the sL
     assert(sL.size == 1);
     try sL.clearRetainingCapacity();
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // ---------------- RAPID GROW -----------------//
     // -- read 5, insert 80, remove 5, update 10 -- //
@@ -513,30 +510,27 @@ pub fn benchU64(N: usize) !void {
     // Print stats //
     // Test' individual stats
     try writeStamps("RG", N, time);
-    arenaCacheSizeQuery(&sL.cache_());
+    arenaCacheSizeQuery(&sL.cache);
 
     // ---------------- CLONING -----------------//
     // ------ obtain a clone of the graph ------ //
 
     // Clear the time, re-start the timer
-    // time = 0;
-    // timer = try std.time.Timer.start();
-    // start = timer.lap();
+    time = 0;
+    timer = try std.time.Timer.start();
+    start = timer.lap();
 
-    // var clone = try sL.clone();
-    // defer clone.deinit();
+    var clone = try sL.clone();
+    defer clone.deinit();
 
-    // end = timer.read();
-    // time += end -| start;
-    // aggregate += time;
+    end = timer.read();
+    time += end -| start;
+    aggregate += time;
 
-    // // Print stats //
-    // // Test' individual stats
-    // try writeStamps("CLONE", clone.size, time);
+    // Print stats //
+    // Test' individual stats
+    try writeStamps("CLONE", clone.size, time);
 
-    // Aggregate stats
-    // try writeStamps("aggregate", N * 4 + clone.size, aggregate);
-    try writeStamps("aggregate", N * 4, aggregate);
     try stdout.print("\n", .{});
 }
 
@@ -572,7 +566,7 @@ fn pretty(N: usize, buffer: []u8, alloc: std.mem.Allocator) usize {
     var counter: u8 = 0;
 
     while (N_ > 0) : (counter += 1) {
-        var rem: u8 = @intCast(N_ % 10);
+        const rem: u8 = @intCast(N_ % 10);
         if (counter == 3) {
             stack.append(0x5F) catch unreachable;
             counter = 0;
