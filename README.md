@@ -5,8 +5,8 @@
 Sorted Map is a fast key-value table, an advance version of [skiplist ADT](https://en.wikipedia.org/wiki/Skip_list) as proposed by W.Pugh in 1989 for ordered mapping of keys to  values.
 
 ## Features 
-* Takes any numeric 64-bit key except the maximum value `2^63-1`. 
-* Takes literal keys of type `[]const u8` and of any length, but lexicographically smaller than `"ÿ"` ASCII 255. 
+* Takes any numeric key except the maximum possible value for the given type. 
+* Takes any literal key of type `[]const u8` and of any length, but lexicographically smaller than `"ÿ"` ASCII 255. 
 * Values are arbitrary values.
 * Works in `.set` or `.list` mode. The latter allows duplicate keys.
 * Has forward and backward iteration.
