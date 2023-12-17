@@ -13,7 +13,12 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     // BENCH
-    const bench = b.addExecutable(.{ .name = "SortedMap_bench", .root_source_file = .{ .path = "src/bench.zig" }, .target = target, .optimize = .ReleaseSafe });
+    const bench = b.addExecutable(.{
+        .name = "SortedMap_bench",
+        .root_source_file = .{ .path = "src/bench.zig" },
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
     const bench_run = b.addRunArtifact(bench);
     if (b.args) |args| {
         bench_run.addArgs(args);
@@ -23,7 +28,7 @@ pub fn build(b: *std.Build) void {
 
     // TEST
     const main_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = "src/sorted_map.zig" },
         .target = target,
         .optimize = .ReleaseSafe,
     });
