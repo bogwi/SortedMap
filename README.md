@@ -5,16 +5,19 @@
 Sorted Map is a fast key-value table, an advance version of [skiplist ADT](https://en.wikipedia.org/wiki/Skip_list) as proposed by W.Pugh in 1989 for ordered mapping of keys to  values.
 
 ## Features 
-* Keys are any numeric but smaller than `2^63-1` or literal, `[]const u8`, but smaller than `"ÿ"` ASCII 255. 
-* Values are any values.
+* Takes any numeric key but of the value less than `2^63-1`. 
+* Takes literal keys of type `[]const u8` of any length, but lexicographically smaller than `"ÿ"` ASCII 255. 
+* Values are arbitrary values.
 * Works in `.set` or `.list` mode. The latter allows duplicate keys.
-* Forward backward iteration.
+* Has forward and backward iteration.
 * Has `min`, `max`, `median` key query.
-* Supports queries by key or index akin to Python's list class, including reverse indexing.
-* Basic operations like `put`, `get`, `remove` work on a range or a slice of keys as well
+* Supports queries by key or index, similar to Python's list class, including reverse indexing.
+* Basic operations like `get`, `remove` work on a range as well.
+* Updating the values by giving the `start_idx` - `stop_idx` range is O(1) each update. Yes, the whole map can be updated in O(n).
+* Updating the values by giving the `start_key` - `stop_key` range is O(1) each update. *Coming soon*.
 
 ## Performance
-The benchmark is a set of standard stress routines to measure the throughput for the given task. The machine is an Apple M1 with 32GB RAM, optimization flag `ReleaseSafe`.
+The benchmark is a set of standard stress routines to measure the throughput for the given task. The machine is an Apple M1 with 32GB RAM, optimization flag `ReleaseFast`.
 
 There are five tests in total, all of which are run on the random data with intermediate shuffling during the test stages:
 
@@ -85,13 +88,13 @@ arena size: 894236804, cache len: 5
 ```
 zig build bench
 ```
-by default it runs 100_000 rounds each test on `u64` type
+By default it runs 100_000 rounds each test on the `u64` type.
 
-Give it a larger number to stress the map more
+Give it a larger number to stress the map more.
 ```
 zig build bench -- 1_000_000
 ```
-prepend with `-str` to test on `[8]u8` literal.
+Prepend with `-str` to test on the arbitrary `[8]u8` word.
 ```
 zig build bench -- 1_000_000 -str
 ```
@@ -115,6 +118,11 @@ Initiate for string literal keys:
 ```zig
 const map = SortedMap([]const u8, your_value_type, .set).init(your_allocator);
 defer map.deinit();
+```
+
+## zig version
+```
+0.12.0-dev.1830+779b8e259
 ```
 
 
