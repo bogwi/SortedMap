@@ -277,21 +277,6 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 }
             }
         }
-        fn getNodePtrByIndex(self: *Self, index: i64) ?*Node {
-            if (@abs(index) >= self.size) return null;
-            var index_: u64 = if (index < 0) self.size - @abs(index) else @abs(index);
-
-            var node = self.header;
-            index_ += 1;
-            while (node.parent != null) {
-                node = node.parent.?;
-                while (!eql(node.next.?.item.key, MAXSIZE) and index_ >= node.next.?.width) {
-                    index_ -= node.next.?.width;
-                    node = node.next.?;
-                }
-            }
-            return node;
-        }
 
         //////////////////// PUBLIC API //////////////////////
 
@@ -742,39 +727,28 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             return true;
         }
 
-        /// Return `ReverseIterator`, a struct with `prev` and `reset` methods
-        /// to iterate the SortedMap backward. Does not use allocation.
-        pub fn itemsReversed(self: *Self) ReverseIterator {
-            return ReverseIterator{ .ctx = self, .grr = self.groundRight() };
+        /// Return `Iterator` struct to run the SortedMap backward
+        /// starting from the right most node. This function is a mere convenience to
+        /// `iterByKey()` which lets you specify the starting key, and then go
+        /// forward or backward as you need.
+        pub fn itemsReversed(self: *Self) Iterator {
+            const node: *Node = self.groundRight();
+            return Iterator{ .ctx = self, .gr = node, .rst = node };
         }
-        /// Use `prev` to iterate through the SortedMap backward.
-        /// Use `reset` to reset the fringe back to the last item in the map.
-        pub const ReverseIterator = struct {
-            ctx: *Self,
-            grr: *Node,
-
-            pub fn prev(self: *ReverseIterator) ?Item {
-                while (self.grr.prev != null) {
-                    const node__ = self.grr;
-                    self.grr = node__.prev.?;
-                    return node__.item;
-                }
-                return null;
-            }
-            pub fn reset(self: *ReverseIterator) void {
-                self.grr = self.ctx.groundRight();
-            }
-        };
-        /// Return `Iterator`, a struct with `prev` and `reset` methods
-        /// to iterate the SortedMap forward. Does not use allocation.
+        /// Return `Iterator` struct to run the SortedMap forward
+        /// starting from the left most node. This function is a mere convenience to
+        /// `iterByKey()` which lets you specify the starting key, and then go
+        /// forward or backward as you need.
         pub fn items(self: *Self) Iterator {
-            return Iterator{ .ctx = self, .gr = self.groundLeft() };
+            const node: *Node = self.groundLeft();
+            return Iterator{ .ctx = self, .gr = node, .rst = node };
         }
         /// Use `next` to iterate through the SortedMap forward.
         /// Use `reset` to reset the fringe back to the first item in the map.
         pub const Iterator = struct {
             ctx: *Self,
             gr: *Node,
+            rst: *Node,
 
             pub fn next(self: *Iterator) ?Item {
                 while (!eql(self.gr.item.key, MAXSIZE)) {
@@ -782,12 +756,43 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                     self.gr = node__.next.?;
                     return node__.item;
                 }
+                // TODO: technically it should be self.gr = self.gr.prev.?;
+                self.gr = self.ctx.groundRight();
+                return null;
+            }
+            pub fn prev(self: *Iterator) ?Item {
+                while (self.gr.prev != null) {
+                    const node__ = self.gr;
+                    self.gr = node__.prev.?;
+                    return node__.item;
+                }
+                // one step fow so we can use next() right away
+                self.gr = self.gr.next.?;
                 return null;
             }
             pub fn reset(self: *Iterator) void {
-                self.gr = self.ctx.groundLeft();
+                self.gr = self.rst.prev.?;
             }
         };
+        /// Return `Iterator` struct  to run the SortedMap forward:`next()` or
+        /// backward:`prev()` depending on the start_key. Once exhausted,
+        /// you can run it in the opposite direction. If you want to start over, call `reset()`
+        pub fn iterByKey(self: *Self, start_key: KEY) !Iterator {
+            if (self.getNodePtr(start_key)) |node| {
+                return Iterator{ .ctx = self, .gr = node, .rst = node };
+            }
+            return SortedMapError.MissingStartKey;
+        }
+
+        /// Return `Iterator` struct  to run the SortedMap forward:`next()` or
+        /// backward:`prev()` depending on the `start_idx`. Once exhausted,
+        /// you can run it in the opposite direction. If you want to start over, call `reset()`
+        pub fn iterByIndex(self: *Self, start_idx: i64) !Iterator {
+            if (self.getNodePtrByIndex(start_idx)) |node| {
+                return Iterator{ .ctx = self, .gr = node, .rst = node };
+            }
+            return SortedMapError.MissingStartKey;
+        }
 
         /// Return the VALUE of an item associated with the min key,
         /// or the VALUE of the very first item in the SortedMap.
@@ -846,9 +851,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             } else return null;
         }
 
-        /// Get a pointer to the Item associated with the given key,\
+        /// Get a pointer to the Node associated with the given key,\
         /// or return null if no such item is present in the map.
-        fn getNodePtr(self: *Self, key: KEY) ?*Node {
+        pub fn getNodePtr(self: *Self, key: KEY) ?*Node {
             var node = self.header;
             while (node.parent != null) {
                 node = node.parent.?;
@@ -866,6 +871,23 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 } else return null;
             }
         }
+        /// Get a pointer to the Node associated with the given index,\
+        /// or return null if the given index is out of the map's size.
+        pub fn getNodePtrByIndex(self: *Self, index: i64) ?*Node {
+            if (@abs(index) >= self.size) return null;
+            var index_: u64 = if (index < 0) self.size - @abs(index) else @abs(index);
+
+            var node = self.header;
+            index_ += 1;
+            while (node.parent != null) {
+                node = node.parent.?;
+                while (!eql(node.next.?.item.key, MAXSIZE) and index_ >= node.next.?.width) {
+                    index_ -= node.next.?.width;
+                    node = node.next.?;
+                }
+            }
+            return node;
+        }
 
         /// Set the defined slice from the `start` to (but not including)
         /// `stop` indices belonging to the map to the given value.
@@ -873,9 +895,11 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Supports negative indices akin to Python's list() class.
         pub fn setSliceToValue(self: *Self, start: i64, stop: i64, step: i64, value_: VALUE) !void {
-            if (start >= stop) return SortedMapError.StartIndexIsGreaterThanEndIndex;
+            const size_: i64 = @bitCast(self.size);
+            const stop_: i64 = if (stop < 0) size_ + stop else stop;
+            if (start >= stop_) return SortedMapError.StartIndexIsGreaterThanEndIndex;
 
-            var gs = try self.getSlice(start, stop, step);
+            var gs = try self.getSlice(start, stop_, step);
             gs.setter(value_);
         }
 
@@ -889,7 +913,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             mutex.lock();
             defer mutex.unlock();
 
-            if (start >= stop) return SortedMapError.StartIndexIsGreaterThanEndIndex;
+            if (stop < 0)
+                if (start >= self.size - @abs(stop)) return SortedMapError.StartIndexIsGreaterThanEndIndex;
 
             if (step == 0) return SortedMapError.StepIndexIsZero;
 
@@ -1051,15 +1076,33 @@ test "SortedMap: simple" {
     }
 
     try expect(map.size == 32);
-    var items = map.items();
+    var items = try map.iterByKey(map.getItemByIndex(0).?.key);
     while (items.next()) |item| {
         try expect(item.key == item.value - 2);
     }
 
     try map.setSliceToValue(0, 32, 1, 444);
-    items.reset();
+    try expect(map.size == 32);
+    // because of the previous iteration, now iter can go backward
+    while (items.prev()) |item| {
+        try expect(item.value == 444);
+    }
+    // and now it can go forward again
     while (items.next()) |item| {
         try expect(item.value == 444);
+    }
+
+    try map.setSliceToValue(0, 32 / 2, 1, 333);
+    try map.setSliceToValue(32 / 2, 32, 1, 555);
+    // get new iter from the second half
+    items = try map.iterByIndex(@as(i64, 16));
+    while (items.next()) |item| {
+        try expect(item.value == 555);
+    }
+    // reset to the starting point, and move backward first half of the map
+    items.reset();
+    while (items.prev()) |item| {
+        try expect(item.value == 333);
     }
 }
 
