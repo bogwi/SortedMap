@@ -771,7 +771,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 return null;
             }
             pub fn reset(self: *Iterator) void {
-                self.gr = self.rst.prev.?;
+                self.gr = self.rst;
             }
         };
         /// Return `Iterator` struct  to run the SortedMap forward:`next()` or
@@ -1076,10 +1076,18 @@ test "SortedMap: simple" {
     }
 
     try expect(map.size == 32);
+    var counter: usize = 0;
     var items = try map.iterByKey(map.getItemByIndex(0).?.key);
-    while (items.next()) |item| {
+    while (items.next()) |item| : (counter += 1) {
         try expect(item.key == item.value - 2);
     }
+    try expect(counter == 32);
+    items.reset();
+    counter = 0;
+    while (items.next()) |item| : (counter += 1) {
+        try expect(item.key == item.value - 2);
+    }
+    try expect(counter == 32);
 
     try map.setSliceToValue(0, 32, 1, 444);
     try expect(map.size == 32);
@@ -1101,6 +1109,7 @@ test "SortedMap: simple" {
     }
     // reset to the starting point, and move backward first half of the map
     items.reset();
+    try expect(items.prev().?.value == 555); // this value is idx 16, so still 555!
     while (items.prev()) |item| {
         try expect(item.value == 333);
     }
