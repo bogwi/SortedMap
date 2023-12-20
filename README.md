@@ -14,7 +14,7 @@ Sorted Map is a fast key-value table, an advance version of [skiplist ADT](https
 * Supports queries by key or index, similar to Python's list class, including reverse indexing.
 * Basic operations like `get`, `remove` work on a range as well.
 * Updating the values by giving the `start_idx` - `stop_idx` range is O(1) each update. Yes, the whole map can be updated in O(n).
-* Updating the values by giving the `start_key` - `stop_key` range is O(1) each update. *Coming soon*.
+* Updating the values by giving the `start_key` - `stop_key` range is O(1) each update.
 
 ## Performance
 The benchmark is a set of standard stress routines to measure the throughput for the given task. The machine is an Apple M1 with 32GB RAM, optimization flag `ReleaseFast`.
