@@ -48,6 +48,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             MissingStartKey,
             MissingEndKey,
             InvalidIndex,
+            InvalidStopIndex,
             StepIndexIsZero,
         };
 
@@ -607,7 +608,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         ///
         /// Returns an error if `start_key` > `stop_key` to indicate the issue.
         /// Returns an error if one of the keys is missing.
-        pub fn removeSlice(self: *Self, start_key: KEY, stop_key: KEY) !bool {
+        pub fn removeSliceByKey(self: *Self, start_key: KEY, stop_key: KEY) !bool {
             mutex.lock();
             defer mutex.unlock();
 
@@ -876,6 +877,43 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
                 } else return null;
             }
         }
+
+        /// Set the defined slice from the `start` to (but not including)
+        /// `stop` node belonging to the map to the given value.
+        /// Step equal to 1 means take every item in the slice.
+        ///
+        /// Supports negative indices akin to Python's list() class.
+        pub fn setSliceByKey(self: *Self, start_key: KEY, stop_key: KEY, step: i64, value: VALUE) !void {
+            if (step == 0) return SortedMapError.StepIndexIsZero;
+
+            var gs = try self.getSliceByKey(start_key, stop_key, step);
+            gs.setter(value);
+        }
+
+        /// Get the `SliceIterator` of the defined slice from the `start` to
+        /// (but not including) `stop` node belonging to the map.
+        /// Step equal to 1 means take every item in the slice.
+        /// Use `next()` method to run the slice. Does not use allocation.
+        ///
+        /// Supports negative indices akin to Python's list() class.
+        /// **TODO:** at the moment `SliceIterator` has no `reset()`. If you need to run the same slice
+        /// multiple times, call the function so, obtaining the slice is cheap.
+        pub fn getSliceByKey(self: *Self, start_key: KEY, stop_key: KEY, step: i64) !SliceIterator {
+            if (step == 0) return SortedMapError.StepIndexIsZero;
+
+            while (self.getNodePtr(start_key)) |start_k| {
+                while (self.getNodePtr(stop_key)) |stop_k| {
+                    const sni = SliceNodeIterator{
+                        .start = start_k,
+                        .end = stop_k,
+                        .step = step,
+                    };
+                    return SliceIterator{ .sni = sni };
+                }
+                return SortedMapError.MissingEndKey;
+            }
+            return SortedMapError.MissingStartKey;
+        }
         /// Get a pointer to the Node associated with the given index,\
         /// or return null if the given index is out of the map's size.
         pub fn getNodePtrByIndex(self: *Self, index: i64) ?*Node {
@@ -899,38 +937,37 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Step equal to 1 means take every item in the slice.
         ///
         /// Supports negative indices akin to Python's list() class.
-        pub fn setSliceToValue(self: *Self, start: i64, stop: i64, step: i64, value_: VALUE) !void {
+        pub fn setSliceByIndex(self: *Self, start: i64, stop: i64, step: i64, value_: VALUE) !void {
+            if (step == 0) return SortedMapError.StepIndexIsZero;
+
             const size_: i64 = @bitCast(self.size);
             const stop_: i64 = if (stop < 0) size_ + stop else stop;
             if (start >= stop_) return SortedMapError.StartIndexIsGreaterThanEndIndex;
 
-            var gs = try self.getSlice(start, stop_, step);
+            var gs = try self.getSliceByIndex(start, stop_, step);
             gs.setter(value_);
         }
 
-        /// Get the SliceIterator of the defined slice from the `start` to
+        /// Get the `SliceIterator` of the defined slice from the `start` to
         /// (but not including) `stop` indices belonging to the map.
         /// Step equal to 1 means take every item in the slice.
-        /// Use `next` method to run the slice. Does not use allocation.
+        /// Use `next()` method to run the slice. Does not use allocation.
         ///
         /// Supports negative indices akin to Python's list() class.
-        pub fn getSlice(self: *Self, start: i64, stop: i64, step: i64) !SliceIterator {
-            mutex.lock();
-            defer mutex.unlock();
-
+        /// **TODO:** at the moment `SliceIterator` has no `reset()`. If you need to run the same slice
+        /// multiple times, call the function so, obtaining the slice is cheap.
+        pub fn getSliceByIndex(self: *Self, start: i64, stop: i64, step: i64) !SliceIterator {
+            if (stop < -@as(i64, @bitCast(self.size)) or stop > self.size)
+                return SortedMapError.InvalidStopIndex;
             if (stop < 0)
                 if (start >= self.size - @abs(stop)) return SortedMapError.StartIndexIsGreaterThanEndIndex;
 
             if (step == 0) return SortedMapError.StepIndexIsZero;
 
             while (self.getNodePtrByIndex(start)) |node| {
-                var stop_: i64 = if (stop > self.size) @as(i64, @bitCast(self.size)) else stop;
-                if (stop < -@as(i64, @bitCast(self.size)))
-                    stop_ = 0;
-
                 const sni = SliceNodeIterator{
                     .start = node,
-                    .stop = if (stop_ < 0) self.size - @abs(stop_) else @abs(stop_),
+                    .stop = if (stop < 0) self.size - @abs(stop) else @abs(stop),
                     .step = step,
                     .fringe = if (start < 0) self.size - @abs(start) else @abs(start),
                     .step2 = if (step > 0) @as(i64, 0) else step,
@@ -943,14 +980,26 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             sni: SliceNodeIterator,
 
             pub fn next(self: *SliceIterator) ?Item {
-                while (self.sni.next()) |node| {
-                    return node.item;
+                if (self.sni.stop != 0) {
+                    while (self.sni.next()) |node| {
+                        return node.item;
+                    }
+                } else {
+                    while (self.sni.next2()) |node| {
+                        return node.item;
+                    }
                 }
                 return null;
             }
-            fn setter(self: *SliceIterator, value_: VALUE) void {
-                while (self.sni.next()) |node| {
-                    node.item.value = value_;
+            fn setter(self: *SliceIterator, value: VALUE) void {
+                if (self.sni.stop != 0) {
+                    while (self.sni.next()) |node| {
+                        node.item.value = value;
+                    }
+                } else {
+                    while (self.sni.next2()) |node| {
+                        node.item.value = value;
+                    }
                 }
                 return;
             }
@@ -958,10 +1007,28 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Use `next` to iterate over the node's pointers in the slice
         pub const SliceNodeIterator = struct {
             start: *Node,
-            stop: u64,
+            end: *Node = undefined,
+            stop: u64 = 0,
             step: i64,
-            fringe: u64,
-            step2: i64,
+            fringe: u64 = 0,
+            step2: i64 = 0,
+            edge: i64 = 0,
+
+            pub fn next2(self: *SliceNodeIterator) ?*Node {
+                while (!eql(self.start, self.end)) {
+                    if (@mod(self.edge, self.step) == 0) {
+                        self.edge += 1;
+                        const node = self.start;
+                        self.start = node.next.?;
+                        return node;
+                    } else {
+                        self.edge += 1;
+                        self.start = self.start.next.?;
+                        continue;
+                    }
+                }
+                return null;
+            }
 
             pub fn next(self: *SliceNodeIterator) ?*Node {
                 if (self.step > 0) {
@@ -1094,7 +1161,7 @@ test "SortedMap: simple, iterator" {
     }
     try expect(counter == 32);
 
-    try map.setSliceToValue(0, 32, 1, 444);
+    try map.setSliceByIndex(0, 32, 1, 444);
     try expect(map.size == 32);
     // because the previous iteration has been exhausted, now iter can go backward
     while (items.prev()) |item| {
@@ -1105,8 +1172,8 @@ test "SortedMap: simple, iterator" {
         try expect(item.value == 444);
     }
 
-    try map.setSliceToValue(0, 32 / 2, 1, 333);
-    try map.setSliceToValue(32 / 2, 32, 1, 555);
+    try map.setSliceByIndex(0, 32 / 2, 1, 333);
+    try map.setSliceByIndex(32 / 2, 32, 1, 555);
 
     // get new iter from the second half
     items = try map.iterByIndex(@as(i64, 16));
@@ -1138,6 +1205,17 @@ test "SortedMap: simple, iterator" {
     try expect(items.prev().?.key == 15); // 15 <-
     try expect(items.prev().?.key == 14); // 14 <-
     // ...
+
+    // getSliceByKey and setSliceByKey
+    var slice = try map.getSliceByKey(1, 14, 3);
+    while (slice.next()) |item| {
+        try expect(item.value == 333);
+    }
+    try map.setSliceByKey(1, 14, 3, 888);
+    slice = try map.getSliceByKey(1, 14, 3); // get the new instance of the same slice
+    while (slice.next()) |item| {
+        try expect(item.value == 888);
+    }
 }
 
 test "SortedMap: basics" {
@@ -1164,7 +1242,7 @@ test "SortedMap: basics" {
     try expect(map.median() == 8);
 
     const step: i64 = 1;
-    var slice = try map.getSlice(-12, 16, step);
+    var slice = try map.getSliceByIndex(-12, 16, step);
     var start: i64 = 16 - 12;
     while (slice.next()) |item| : (start += 1)
         try expect(start == item.key);
@@ -1185,7 +1263,7 @@ test "SortedMap: basics" {
     try expect(map.updateByIndex(-1, 15));
     try expect(map.max() == k - 1);
 
-    try map.setSliceToValue(0, 5, 1, 99);
+    try map.setSliceByIndex(0, 5, 1, 99);
 
     var itemsR = map.itemsReversed();
     start = 15;
@@ -1254,7 +1332,7 @@ test "SortedMap: basics" {
     clone_size -|= 18;
     try expect(clone.size == clone_size);
 
-    try expect(true == try clone.removeSlice(8, 50));
+    try expect(true == try clone.removeSliceByKey(8, 50));
     try expect(true == try clone.removeSliceByIndex(-21, @bitCast(clone.size - 10)));
     try expect(true == try clone.removeSliceByIndex(-21, -10));
 
@@ -1391,7 +1469,7 @@ test "SortedMap: a string literal as a key" {
     try expect(map.remove("is"));
     try expect(map.size == 4);
 
-    try expect(try map.removeSlice("and", "general-purpose"));
+    try expect(try map.removeSliceByKey("and", "general-purpose"));
     try expect(map.removeByIndex(@as(i64, 0)));
     try expect(sEql(u8, map.getItemByIndex(0).?.key, "general-purpose"));
     try expect(map.getByIndex(@as(i64, 0)) == 3);
