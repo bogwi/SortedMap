@@ -744,7 +744,8 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             return Iterator{ .ctx = self, .gr = node, .rst = node };
         }
         /// Use `next` to iterate through the SortedMap forward.
-        /// Use `reset` to reset the fringe back to the first item in the map.
+        /// Use `prev` to iterate through the SortedMap backward.
+        /// Use `reset` to reset the fringe back to the starting point.
         pub const Iterator = struct {
             ctx: *Self,
             gr: *Node,
@@ -752,9 +753,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
             pub fn next(self: *Iterator) ?Item {
                 while (!eql(self.gr.item.key, MAXSIZE)) {
-                    const node__ = self.gr;
-                    self.gr = node__.next.?;
-                    return node__.item;
+                    const node = self.gr;
+                    self.gr = self.gr.next.?;
+                    return node.item;
                 }
                 // TODO: technically it should be self.gr = self.gr.prev.?;
                 self.gr = self.ctx.groundRight();
@@ -762,9 +763,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             }
             pub fn prev(self: *Iterator) ?Item {
                 while (self.gr.prev != null) {
-                    const node__ = self.gr;
-                    self.gr = node__.prev.?;
-                    return node__.item;
+                    const node = self.gr;
+                    self.gr = node.prev.?;
+                    return node.item;
                 }
                 // one step fow so we can use next() right away
                 self.gr = self.gr.next.?;
@@ -776,7 +777,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         };
         /// Return `Iterator` struct  to run the SortedMap forward:`next()` or
         /// backward:`prev()` depending on the start_key. Once exhausted,
-        /// you can run it in the opposite direction. If you want to start over, call `reset()`
+        /// you can run it in the opposite direction. If you want to start over, call `reset()`.
+        /// Reversing the iteration in the process, before it hits the either end of the map,
+        /// *has naturally a lag in one node.*
         pub fn iterByKey(self: *Self, start_key: KEY) !Iterator {
             if (self.getNodePtr(start_key)) |node| {
                 return Iterator{ .ctx = self, .gr = node, .rst = node };
@@ -786,7 +789,9 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 
         /// Return `Iterator` struct  to run the SortedMap forward:`next()` or
         /// backward:`prev()` depending on the `start_idx`. Once exhausted,
-        /// you can run it in the opposite direction. If you want to start over, call `reset()`
+        /// you can run it in the opposite direction. If you want to start over, call `reset()`.
+        /// Reversing the iteration in the process, before it hits the either end of the map,
+        /// *has naturally a lag in one node.*
         pub fn iterByIndex(self: *Self, start_idx: i64) !Iterator {
             if (self.getNodePtrByIndex(start_idx)) |node| {
                 return Iterator{ .ctx = self, .gr = node, .rst = node };
@@ -1054,7 +1059,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
 var allocatorT = std.testing.allocator;
 const expect = std.testing.expect;
 
-test "SortedMap: simple" {
+test "SortedMap: simple, iterator" {
     var map = try SortedMap(u128, u128, .set).init(allocatorT);
     defer map.deinit();
 
@@ -1091,7 +1096,7 @@ test "SortedMap: simple" {
 
     try map.setSliceToValue(0, 32, 1, 444);
     try expect(map.size == 32);
-    // because of the previous iteration, now iter can go backward
+    // because the previous iteration has been exhausted, now iter can go backward
     while (items.prev()) |item| {
         try expect(item.value == 444);
     }
@@ -1102,17 +1107,37 @@ test "SortedMap: simple" {
 
     try map.setSliceToValue(0, 32 / 2, 1, 333);
     try map.setSliceToValue(32 / 2, 32, 1, 555);
+
     // get new iter from the second half
     items = try map.iterByIndex(@as(i64, 16));
     while (items.next()) |item| {
         try expect(item.value == 555);
     }
-    // reset to the starting point, and move backward first half of the map
+    // reset to the starting point
     items.reset();
     try expect(items.prev().?.value == 555); // this value is idx 16, so still 555!
+    // move backward, iterating over the first half of the map
     while (items.prev()) |item| {
         try expect(item.value == 333);
     }
+
+    // PLEASE UNDERSTAND REVERSING THE ITERATOR IN THE PROCESS
+    items.reset(); // reset back to the starting key, 16
+
+    // Calling prev() or next() before the iteration hits the right or the left end of the map,
+    // know that the lag of one node occurs.
+    // Iterator gives you the current node and only then
+    // switches either to the prev node or to the next if such node exist!
+    try expect(items.prev().?.key == 16); // 16, the starting key
+    try expect(items.prev().?.key == 15); // 15 <-
+    try expect(items.prev().?.key == 14); // 14 <-
+    try expect(items.next().?.key == 13); // 13 <- lagging
+    try expect(items.next().?.key == 14); // 14 ->
+    try expect(items.next().?.key == 15); // 15 ->
+    try expect(items.prev().?.key == 16); // 16 -> lagging
+    try expect(items.prev().?.key == 15); // 15 <-
+    try expect(items.prev().?.key == 14); // 14 <-
+    // ...
 }
 
 test "SortedMap: basics" {
