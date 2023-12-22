@@ -24,7 +24,14 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
     const keyIsString: bool = comptime if (KEY == []const u8) true else false;
 
     return struct {
-        const MAXSIZE = if (keyIsString) @as([]const u8, "ÿ") else if (@typeInfo(KEY) == .Int) std.math.maxInt(KEY) else if (@typeInfo(KEY) == .Float) std.math.inf(KEY) else @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
+        const MAXSIZE = if (keyIsString)
+            @as([]const u8, "ÿ")
+        else if (@typeInfo(KEY) == .Int)
+            std.math.maxInt(KEY)
+        else if (@typeInfo(KEY) == .Float)
+            std.math.inf(KEY)
+        else
+            @compileError("THE KEYS MUST BE NUMERIC OR LITERAL");
 
         /// A field struct containing a key-value pair.
         ///
