@@ -506,7 +506,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
         /// Pop the MAP last item's value or fail to assert that the map contains at least 1 item.
         pub fn pop(self: *Self) VALUE {
             assert(self.size > 0);
-            return self.fetchRemoveByIndex(@bitCast(self.size)).?.value;
+            return self.fetchRemoveByIndex(@bitCast(self.size - 1)).?.value;
         }
 
         /// Pop the MAP first item's value or null if the map is empty.
@@ -580,7 +580,7 @@ pub fn SortedMap(comptime KEY: type, comptime VALUE: type, comptime mode: MapMod
             mutex.lock();
             defer mutex.unlock();
 
-            if (@abs(index) > self.size) return null;
+            if (@abs(index) >= self.size) return null;
             const index_: u64 = if (index < 0) self.size -| @abs(index) else @abs(index);
 
             var stack: Stack = self.getLevelStackByIndex(index_) catch unreachable;
@@ -1353,11 +1353,12 @@ test "SortedMap: basics" {
     _ = clone.popFirst();
     _ = clone.popFirstOrNull();
     _ = clone.popFirstOrNull();
+    _ = clone.popFirstOrNull();
     try expect(clone.size == clone_size - 9);
 
-    try expect(clone.median() == @as(i64, 62));
-    try expect(clone.getFirst() == @as(i64, 62));
-    try expect(clone.getLast() == @as(i64, 62));
+    try expect(clone.median() == @as(i64, 63));
+    try expect(clone.getFirst() == @as(i64, 63));
+    try expect(clone.getLast() == @as(i64, 63));
     try expect(clone.size == 1);
 
     for (keys.items) |v| {
@@ -1371,7 +1372,7 @@ test "SortedMap: basics" {
     try expect(clone.getItemIndexByKey(query - 1) != null);
 
     try expect(clone.getFirstOrNull().? == @as(i64, -300));
-    try expect(clone.getLastOrNull().? == @as(i64, 62));
+    try expect(clone.getLastOrNull().? == @as(i64, 63));
 
     try clone.put(std.math.maxInt(i64) - 1, std.math.maxInt(i64));
     try expect(clone.max() == std.math.maxInt(i64));
@@ -1481,4 +1482,42 @@ test "SortedMap: a string literal as a key" {
     try expect(sEql(u8, map.getItemByIndex(0).?.key, "general-purpose"));
     try expect(map.getByIndex(@as(i64, 0)) == 3);
     try expect(map.size == 1);
+}
+
+test "split-remove" {
+    var map = try SortedMap(usize, usize, .set).init(allocatorT);
+    defer map.deinit();
+
+    for (0..16) |i| {
+        try map.put(i, i);
+    }
+
+    for (8..16) |i| {
+        try expect(map.getByIndex(8).? == i % 16);
+        try expect(map.removeByIndex(8));
+    }
+    try expect(map.size == 8);
+
+    for (4..8) |i| {
+        try expect(map.getByIndex(4).? == i % 8);
+        try expect(map.removeByIndex(4));
+    }
+    try expect(map.size == 4);
+
+    for (2..4) |i| {
+        try expect(map.getByIndex(2).? == i % 4);
+        try expect(map.removeByIndex(2));
+    }
+    try expect(map.size == 2);
+
+    for (1..2) |i| {
+        try expect(map.getByIndex(1).? == i % 2);
+        try expect(map.removeByIndex(1));
+    }
+    try expect(map.size == 1);
+
+    try expect(map.getByIndex(0) == 0);
+    try expect(map.removeByIndex(0));
+    try expect(!map.removeByIndex(0));
+    try expect(map.size == 0);
 }
