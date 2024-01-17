@@ -1,4 +1,4 @@
-// Contact the author: https://github.com/bogwi
+// MIT (c) bogwi@rakumail.jp 2023 //
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
