@@ -1484,7 +1484,7 @@ test "SortedMap: a string literal as a key" {
     try expect(map.size == 1);
 }
 
-test "split-remove" {
+test "SortedMap: split-remove" {
     var map = try SortedMap(usize, usize, .set).init(allocatorT);
     defer map.deinit();
 
@@ -1520,4 +1520,63 @@ test "split-remove" {
     try expect(map.removeByIndex(0));
     try expect(!map.removeByIndex(0));
     try expect(map.size == 0);
+}
+
+// The following two tests were adapted from here
+// https://github.com/oven-sh/bun/blob/main/src/StaticHashMap.zig#L623
+test "Sorted Map: test compare functions on [32]u8 keys" {
+    const prefix = [_]u8{'0'} ** 8 ++ [_]u8{'1'} ** 23;
+    const a = prefix ++ [_]u8{0};
+    const b = prefix ++ [_]u8{1};
+
+    try expect(SortedMap([]const u8, void, .set).EQL(&a, &a));
+    try expect(SortedMap([]const u8, void, .set).EQL(&b, &b));
+    try expect(SortedMap([]const u8, void, .set).gT(&b, &a));
+    try expect(!SortedMap([]const u8, void, .set).gT(&a, &b));
+
+    try expect(SortedMap([]const u8, void, .set).gT(&[_]u8{'o'} ++ [_]u8{'0'} ** 31, &[_]u8{'i'} ++ [_]u8{'0'} ** 31));
+    try expect(SortedMap([]const u8, void, .set).gT(&[_]u8{ 'h', 'o' } ++ [_]u8{'0'} ** 30, &[_]u8{ 'h', 'i' } ++ [_]u8{'0'} ** 30));
+}
+
+test "SortedMap: put, get, remove [32]u8 keys" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var allocatorA = arena.allocator();
+    defer arena.deinit();
+
+    for (0..128) |seed| {
+        var keys = std.ArrayList([]const u8).init(allocatorA);
+        try keys.ensureTotalCapacity(512);
+        defer keys.deinit();
+        const T = [32]u8;
+
+        var prng = std.rand.DefaultPrng.init(seed);
+        const random = prng.random();
+
+        for (0..512) |_| {
+            var key: *T = try allocatorA.create(T);
+            for (0..32) |idx| {
+                key[idx] = random.intRangeAtMost(u8, 33, 127);
+            }
+            try keys.append(key);
+        }
+        random.shuffle([]const u8, keys.items);
+
+        var map = try SortedMap([]const u8, usize, .list).init(allocatorT);
+        defer map.deinit();
+
+        for (keys.items, 0..) |key, i| try map.put(key, i);
+
+        try expect(keys.items.len == map.size);
+
+        var itemsIT = map.items();
+        var key_ = itemsIT.next().?.key;
+
+        while (itemsIT.next()) |item| {
+            try expect(std.mem.order(u8, key_, item.key).compare(.lte));
+            key_ = item.key;
+        }
+
+        for (keys.items, 0..) |key, i| try expect(i == map.get(key).?);
+        for (keys.items) |key| try expect(map.remove(key));
+    }
 }
