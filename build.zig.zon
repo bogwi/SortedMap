@@ -1,6 +1,12 @@
 .{
-    .name = "SortedMap",
+    .name = .SortedMap,
     .version = "0.0.1",
-    .paths = .{"."},
+    .fingerprint = 0xfe6ef8ff3e1d8f15,
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
 }

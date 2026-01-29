@@ -1,10 +1,12 @@
 const std = @import("std");
 const SortedMap = @import("sorted_map.zig").SortedMap;
-const stdout = std.io.getStdOut().writer();
+var stdout_buffer: [4096]u8 = undefined;
+var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+const stdout = &stdout_writer.interface;
 const assert = std.debug.assert;
 const sEql = std.mem.eql;
 
-pub fn benchSTR(N: usize) !void {
+pub fn benchSTR(N: usize, steady_state: usize) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() == .leak) {
         @panic("memory leak ...");
@@ -18,20 +20,40 @@ pub fn benchSTR(N: usize) !void {
     var sL = try SortedMap([]const u8, []const u8, .set).init(allocatorG);
     defer sL.deinit();
 
-    var keys = std.ArrayList([]const u8).init(allocatorA);
+    var keys = std.array_list.Managed([]const u8).init(allocatorA);
     defer keys.deinit();
 
-    var prng = std.rand.DefaultPrng.init(@abs(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@abs(std.time.timestamp()));
     const random = prng.random();
 
+    const cycles_rh: usize = N / 100;
+    const cycles_ex: usize = N / 100;
+    const cycles_exh: usize = N / 198;
+
+    const use_steady: bool = steady_state != 0;
+    const rh_steady: usize = if (use_steady) @max(steady_state, 98) else 98;
+    const ex_steady: usize = if (use_steady) @max(steady_state, 40) else 10;
+    const exh_steady: usize = if (use_steady) @max(steady_state, 98) else 1;
+
+    // Ensure we have enough unique keys for all workloads (including sliding-window
+    // steady-state variants).
+    const key_count: usize = @max(
+        N,
+        @max(
+            rh_steady + cycles_rh + 128,
+            @max(ex_steady + (cycles_ex * 40) + 128, exh_steady + (cycles_exh * 98) + 128),
+        ),
+    );
+
     const T = [8]u8;
-    for (0..N) |_| {
+    for (0..key_count) |_| {
         var key: *T = try allocatorA.create(T);
         for (0..8) |idx| {
             key[idx] = random.intRangeAtMost(u8, 33, 127);
         }
         try keys.append(key);
     }
+    defer allocatorA.free(keys.items);
     random.shuffle([]const u8, keys.items);
 
     // Cosmetic function, number formatting
@@ -43,46 +65,51 @@ pub fn benchSTR(N: usize) !void {
     try stdout.print("\n{s: >24} ops:each test|\n", .{buffer[0..len]});
     try stdout.print("\n|{s: <13}|{s: >11}|{s: >11}|\n", .{ "name", "Tp Mops:sec", "Rt :sec" });
     try stdout.print(" {s:=>37}\n", .{""});
+    try stdout.flush();
 
     // ------------------ READ HEAVY -----------------//
     // ---- read 98, insert 1, remove 1, update 0 --- //
 
     // Initial input for the test because we start with read.
-    for (keys.items[0..98]) |key| {
+    for (keys.items[0..rh_steady]) |key| {
         try sL.put(key, key);
     }
 
     // Start the timer
     var time: u128 = 0;
-    var aggregate: u128 = 0;
     var timer = try std.time.Timer.start();
-    var start = timer.lap();
 
+    var checksum_rh: u64 = 0;
     // Cycle of 100 operations each
-    for (0..N / 100) |i| {
+    var remove_idx: usize = 0;
+    var insert_idx: usize = rh_steady;
+    for (0..cycles_rh) |_| {
 
         // Read the slice of 98 keys
-        for (keys.items[i .. i + 98]) |key| {
-            // assert(sL.get(key) == key);
-            assert(sEql(u8, sL.get(key).?, key));
+        for (keys.items[remove_idx .. remove_idx + 98]) |key| {
+            const v = sL.get(key) orelse unreachable;
+            checksum_rh +%= @as(u64, v[0]);
         }
 
         // Insert 1 new
-        try sL.put(keys.items[i + 98], keys.items[i + 98]);
+        const in_k = keys.items[insert_idx];
+        try sL.put(in_k, in_k);
 
         // Remove 1
-        assert(sL.remove(keys.items[i]));
+        if (!sL.remove(keys.items[remove_idx])) @panic("bench invariant failed: RH remove");
+        remove_idx += 1;
+        insert_idx += 1;
     }
-    var end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    time = timer.read();
+    std.mem.doNotOptimizeAway(checksum_rh);
+    const ops_rh: usize = (N / 100) * 100;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("RH", N, time);
+    try writeStamps("RH", ops_rh, time);
 
     // Clear the sL
-    assert(sL.size == 98);
+    if (sL.size != rh_steady) @panic("bench invariant failed: RH size");
     try sL.clearRetainingCapacity();
     arenaCacheSizeQuery(&sL.cache);
 
@@ -92,53 +119,79 @@ pub fn benchSTR(N: usize) !void {
     // Re-shuffle the keys
     random.shuffle([]const u8, keys.items);
 
-    // Initial input for the test, 10 keys, because we start with read
-    for (keys.items[0..10]) |key| {
-        try sL.put(key, key);
-    }
-
-    // Clear the time, re-start the timer
-    time = 0;
-    timer = try std.time.Timer.start();
-    start = timer.lap();
-
-    // Cycle of 100 operations each
-    var k: usize = 0; // helper coefficient to get the keys rotating
-    for (0..N / 100) |i| {
-
-        // Read 10
-        for (keys.items[i + k .. i + k + 10]) |key| {
-            // assert(sL.get(key) == key);
-            assert(sEql(u8, sL.get(key).?, key));
-        }
-
-        // Insert 40 new
-        for (keys.items[i + k + 10 .. i + k + 50]) |key| {
+    var checksum_ex: u64 = 0;
+    if (!use_steady) {
+        // Original small working-set benchmark.
+        for (keys.items[0..10]) |key| {
             try sL.put(key, key);
         }
 
-        // Remove 40
-        for (keys.items[i + k .. i + k + 40]) |key| {
-            assert(sL.remove(key));
+        timer = try std.time.Timer.start();
+
+        var k: usize = 0; // helper coefficient to get the keys rotating
+        for (0..N / 100) |i| {
+            for (keys.items[i + k .. i + k + 10]) |key| {
+                const v = sL.get(key) orelse unreachable;
+                checksum_ex +%= @as(u64, v[0]);
+            }
+            for (keys.items[i + k + 10 .. i + k + 50]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[i + k .. i + k + 40]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EX remove");
+            }
+            for (keys.items[i + k + 40 .. i + k + 50]) |key| {
+                if (!sL.update(key, key)) @panic("bench invariant failed: EX update");
+            }
+            k += 39;
+        }
+        time = timer.read();
+    } else {
+        // Steady-state variant: keep a constant resident set of `ex_steady` items by
+        // removing 40 from the front of a sliding window and inserting 40 at the back.
+        for (keys.items[0..ex_steady]) |key| {
+            try sL.put(key, key);
         }
 
-        // Update 10
-        for (keys.items[i + k + 40 .. i + k + 50]) |key| {
-            assert(sL.update(key, key));
-        }
+        timer = try std.time.Timer.start();
 
-        k += 39;
+        var resident_start: usize = 0;
+        for (0..cycles_ex) |_| {
+            // Read 10 (existing keys)
+            for (keys.items[resident_start .. resident_start + 10]) |key| {
+                const v = sL.get(key) orelse unreachable;
+                checksum_ex +%= @as(u64, v[0]);
+            }
+
+            // Insert 40 new at the end of the window
+            for (keys.items[resident_start + ex_steady .. resident_start + ex_steady + 40]) |key| {
+                try sL.put(key, key);
+            }
+
+            // Remove 40 from the front of the window
+            for (keys.items[resident_start .. resident_start + 40]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EX remove");
+            }
+
+            // Update 10 that are guaranteed to remain (the last 10 inserted)
+            for (keys.items[resident_start + ex_steady + 30 .. resident_start + ex_steady + 40]) |key| {
+                if (!sL.update(key, key)) @panic("bench invariant failed: EX update");
+            }
+
+            resident_start += 40;
+        }
+        time = timer.read();
+        if (sL.size != ex_steady) @panic("bench invariant failed: EX size");
     }
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    std.mem.doNotOptimizeAway(checksum_ex);
+    const ops_ex: usize = (N / 100) * 100;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("EX", N, time);
+    try writeStamps("EX", ops_ex, time);
 
     // Clear the sL
-    assert(sL.size == 10);
+    if (sL.size != 10 and !use_steady) @panic("bench invariant failed: EX size");
     try sL.clearRetainingCapacity();
     arenaCacheSizeQuery(&sL.cache);
 
@@ -148,53 +201,72 @@ pub fn benchSTR(N: usize) !void {
     // Re-shuffle the keys
     random.shuffle([]const u8, keys.items);
 
-    // Initial input for the test, 10 keys, because we start with read
-    for (keys.items[0..1]) |key| {
-        try sL.put(key, key);
-    }
-
-    // Clear the time, re-start the timer
-    time = 0;
-    timer = try std.time.Timer.start();
-    start = timer.lap();
-
-    // Cycle of 198 operations each
-    k = 0; // helper coefficient to get the keys rotating
-    for (0..N / 198) |i| {
-
-        // Read 1
-        for (keys.items[i + k .. i + k + 1]) |key| {
-            // assert(sL.get(key) == key);
-            assert(sEql(u8, sL.get(key).?, key));
-        }
-
-        // Insert 98 new
-        for (keys.items[i + k + 1 .. i + k + 99]) |key| {
+    var checksum_exh: u64 = 0;
+    if (!use_steady) {
+        // Original small working-set benchmark.
+        for (keys.items[0..1]) |key| {
             try sL.put(key, key);
         }
 
-        // Remove 98
-        for (keys.items[i + k .. i + k + 98]) |key| {
-            assert(sL.remove(key));
+        timer = try std.time.Timer.start();
+
+        var k: usize = 0; // helper coefficient to get the keys rotating
+        for (0..N / 198) |i| {
+            for (keys.items[i + k .. i + k + 1]) |key| {
+                const v = sL.get(key) orelse unreachable;
+                checksum_exh +%= @as(u64, v[0]);
+            }
+            for (keys.items[i + k + 1 .. i + k + 99]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[i + k .. i + k + 98]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EXH remove");
+            }
+            for (keys.items[i + k + 98 .. i + k + 99]) |key| {
+                if (!sL.update(key, key)) @panic("bench invariant failed: EXH update");
+            }
+            k += 97;
+        }
+        time = timer.read();
+    } else {
+        // Steady-state variant: keep a constant resident set of `exh_steady` items by
+        // removing 98 from the front of a sliding window and inserting 98 at the back.
+        for (keys.items[0..exh_steady]) |key| {
+            try sL.put(key, key);
         }
 
-        // Update 1
-        for (keys.items[i + k + 98 .. i + k + 99]) |key| {
-            assert(sL.update(key, key));
-        }
+        timer = try std.time.Timer.start();
 
-        k += 97;
+        var resident_start: usize = 0;
+        for (0..cycles_exh) |_| {
+            const key0 = keys.items[resident_start];
+            const v = sL.get(key0) orelse unreachable;
+            checksum_exh +%= @as(u64, v[0]);
+
+            for (keys.items[resident_start + exh_steady .. resident_start + exh_steady + 98]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[resident_start .. resident_start + 98]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EXH remove");
+            }
+            // Update 1 that is guaranteed to remain (last inserted)
+            const up = keys.items[resident_start + exh_steady + 97];
+            if (!sL.update(up, up)) @panic("bench invariant failed: EXH update");
+
+            resident_start += 98;
+        }
+        time = timer.read();
+        if (sL.size != exh_steady) @panic("bench invariant failed: EXH size");
     }
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    std.mem.doNotOptimizeAway(checksum_exh);
+    const ops_exh: usize = (N / 198) * 198;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("EXH", N, time);
+    try writeStamps("EXH", ops_exh, time);
 
     // Clear the sL
-    assert(sL.size == 1);
+    if (sL.size != 1 and !use_steady) @panic("bench invariant failed: EXH size");
     try sL.clearRetainingCapacity();
     arenaCacheSizeQuery(&sL.cache);
 
@@ -210,18 +282,17 @@ pub fn benchSTR(N: usize) !void {
     }
 
     // Clear the time, re-start the timer
-    time = 0;
     timer = try std.time.Timer.start();
-    start = timer.lap();
 
     // Cycle of 100 operations each
-    k = 0; // helper coefficient to get the keys rotating
+    var k: usize = 0; // helper coefficient to get the keys rotating
+    var checksum_rg: u64 = 0;
     for (0..N / 100) |i| {
 
         // Read 5
         for (keys.items[i + k .. i + k + 5]) |key| {
-            // assert(sL.get(key) == key);
-            assert(sEql(u8, sL.get(key).?, key));
+            const v = sL.get(key) orelse unreachable;
+            checksum_rg +%= @as(u64, v[0]);
         }
 
         // Insert 80 new
@@ -231,48 +302,45 @@ pub fn benchSTR(N: usize) !void {
 
         // Remove 5
         for (keys.items[i + k .. i + k + 5]) |key| {
-            assert(sL.remove(key));
+            if (!sL.remove(key)) @panic("bench invariant failed: RG remove");
         }
 
         // Update 10
         for (keys.items[i + k + 5 .. i + k + 15]) |key| {
-            assert(sL.update(key, key));
+            if (!sL.update(key, key)) @panic("bench invariant failed: RG update");
         }
 
         k += 79;
     }
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    time = timer.read();
+    std.mem.doNotOptimizeAway(checksum_rg);
+    const ops_rg: usize = (N / 100) * 100;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("RG", N, time);
+    try writeStamps("RG", ops_rg, time);
     arenaCacheSizeQuery(&sL.cache);
 
     // ---------------- CLONING -----------------//
     // ------ obtain a clone of the graph ------ //
 
     // Clear the time, re-start the timer
-    time = 0;
     timer = try std.time.Timer.start();
-    start = timer.lap();
 
     var clone = try sL.clone();
     defer clone.deinit();
 
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    time = timer.read();
 
     // Print stats //
     // Test' individual stats
     try writeStamps("CLONE", clone.size, time);
 
     try stdout.print("\n", .{});
+    try stdout.flush();
 }
 
-pub fn benchU64(N: usize) !void {
+pub fn benchU64(N: usize, steady_state: usize) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() == .leak) {
         @panic("memory leak ...");
@@ -289,13 +357,32 @@ pub fn benchU64(N: usize) !void {
     // try sL.ensureTotalCapacity(N);
 
     // Get unique keys and shuffle them
-    var keys = std.ArrayList(u64).init(allocatorA);
+    var keys = std.array_list.Managed(u64).init(allocatorA);
     defer keys.deinit();
 
-    var prng = std.rand.DefaultPrng.init(@abs(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@abs(std.time.timestamp()));
     const random = prng.random();
 
-    for (0..N) |key| {
+    const cycles_rh: usize = N / 100;
+    const cycles_ex: usize = N / 100;
+    const cycles_exh: usize = N / 198;
+
+    const use_steady: bool = steady_state != 0;
+    const rh_steady: usize = if (use_steady) @max(steady_state, 98) else 98;
+    const ex_steady: usize = if (use_steady) @max(steady_state, 40) else 10;
+    const exh_steady: usize = if (use_steady) @max(steady_state, 98) else 1;
+
+    // Ensure we have enough unique keys for all workloads (including sliding-window
+    // steady-state variants).
+    const key_count: usize = @max(
+        N,
+        @max(
+            rh_steady + cycles_rh + 128,
+            @max(ex_steady + (cycles_ex * 40) + 128, exh_steady + (cycles_exh * 98) + 128),
+        ),
+    );
+
+    for (0..key_count) |key| {
         try keys.append(key);
     }
     random.shuffle(u64, keys.items);
@@ -309,45 +396,51 @@ pub fn benchU64(N: usize) !void {
     try stdout.print("\n{s: >24} ops:each test|\n", .{buffer[0..len]});
     try stdout.print("\n|{s: <13}|{s: >11}|{s: >11}|\n", .{ "name", "Tp Mops:sec", "Rt :sec" });
     try stdout.print(" {s:=>37}\n", .{""});
+    try stdout.flush();
 
     // ------------------ READ HEAVY -----------------//
     // ---- read 98, insert 1, remove 1, update 0 --- //
 
     // Initial input for the test because we start with read.
-    for (keys.items[0..98]) |key| {
+    for (keys.items[0..rh_steady]) |key| {
         try sL.put(key, key);
     }
 
     // Start the timer
     var time: u128 = 0;
-    var aggregate: u128 = 0;
     var timer = try std.time.Timer.start();
-    var start = timer.lap();
 
+    var checksum_rh: u64 = 0;
     // Cycle of 100 operations each
-    for (0..N / 100) |i| {
+    var remove_idx: usize = 0;
+    var insert_idx: usize = rh_steady;
+    for (0..cycles_rh) |_| {
 
         // Read the slice of 98 keys
-        for (keys.items[i .. i + 98]) |key| {
-            assert(sL.get(key) == key);
+        for (keys.items[remove_idx .. remove_idx + 98]) |key| {
+            const v = sL.get(key) orelse unreachable;
+            checksum_rh +%= v;
         }
 
         // Insert 1 new
-        try sL.put(keys.items[i + 98], keys.items[i + 98]);
+        const in_k = keys.items[insert_idx];
+        try sL.put(in_k, in_k);
 
         // Remove 1
-        assert(sL.remove(keys.items[i]));
+        if (!sL.remove(keys.items[remove_idx])) @panic("bench invariant failed: RH remove");
+        remove_idx += 1;
+        insert_idx += 1;
     }
-    var end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    time = timer.read();
+    std.mem.doNotOptimizeAway(checksum_rh);
+    const ops_rh: usize = (N / 100) * 100;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("RH", N, time);
+    try writeStamps("RH", ops_rh, time);
 
     // Clear the sL
-    assert(sL.size == 98);
+    if (sL.size != rh_steady) @panic("bench invariant failed: RH size");
     try sL.clearRetainingCapacity();
     arenaCacheSizeQuery(&sL.cache);
 
@@ -357,52 +450,66 @@ pub fn benchU64(N: usize) !void {
     // Re-shuffle the keys
     random.shuffle(u64, keys.items);
 
-    // Initial input for the test, 10 keys, because we start with read
-    for (keys.items[0..10]) |key| {
-        try sL.put(key, key);
-    }
-
-    // Clear the time, re-start the timer
-    time = 0;
-    timer = try std.time.Timer.start();
-    start = timer.lap();
-
-    // Cycle of 100 operations each
-    var k: usize = 0; // helper coefficient to get the keys rotating
-    for (0..N / 100) |i| {
-
-        // Read 10
-        for (keys.items[i + k .. i + k + 10]) |key| {
-            assert(sL.get(key) == key);
-        }
-
-        // Insert 40 new
-        for (keys.items[i + k + 10 .. i + k + 50]) |key| {
+    var checksum_ex: u64 = 0;
+    if (!use_steady) {
+        for (keys.items[0..10]) |key| {
             try sL.put(key, key);
         }
+        timer = try std.time.Timer.start();
 
-        // Remove 40
-        for (keys.items[i + k .. i + k + 40]) |key| {
-            assert(sL.remove(key));
+        var k: usize = 0;
+        for (0..N / 100) |i| {
+            for (keys.items[i + k .. i + k + 10]) |key| {
+                const v = sL.get(key) orelse unreachable;
+                checksum_ex +%= v;
+            }
+            for (keys.items[i + k + 10 .. i + k + 50]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[i + k .. i + k + 40]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EX remove");
+            }
+            for (keys.items[i + k + 40 .. i + k + 50]) |key| {
+                if (!sL.update(key, key)) @panic("bench invariant failed: EX update");
+            }
+            k += 39;
         }
-
-        // Update 10
-        for (keys.items[i + k + 40 .. i + k + 50]) |key| {
-            assert(sL.update(key, key));
+        time = timer.read();
+    } else {
+        for (keys.items[0..ex_steady]) |key| {
+            try sL.put(key, key);
         }
+        timer = try std.time.Timer.start();
 
-        k += 39;
+        var resident_start: usize = 0;
+        for (0..cycles_ex) |_| {
+            for (keys.items[resident_start .. resident_start + 10]) |key| {
+                const v = sL.get(key) orelse unreachable;
+                checksum_ex +%= v;
+            }
+            for (keys.items[resident_start + ex_steady .. resident_start + ex_steady + 40]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[resident_start .. resident_start + 40]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EX remove");
+            }
+            for (keys.items[resident_start + ex_steady + 30 .. resident_start + ex_steady + 40]) |key| {
+                if (!sL.update(key, key)) @panic("bench invariant failed: EX update");
+            }
+            resident_start += 40;
+        }
+        time = timer.read();
+        if (sL.size != ex_steady) @panic("bench invariant failed: EX size");
     }
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    std.mem.doNotOptimizeAway(checksum_ex);
+    const ops_ex: usize = (N / 100) * 100;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("EX", N, time);
+    try writeStamps("EX", ops_ex, time);
 
     // Clear the sL
-    assert(sL.size == 10);
+    if (sL.size != 10 and !use_steady) @panic("bench invariant failed: EX size");
     try sL.clearRetainingCapacity();
     arenaCacheSizeQuery(&sL.cache);
 
@@ -412,52 +519,66 @@ pub fn benchU64(N: usize) !void {
     // Re-shuffle the keys
     random.shuffle(u64, keys.items);
 
-    // Initial input for the test, 1 key, because we start with read
-    for (keys.items[0..1]) |key| {
-        try sL.put(key, key);
-    }
-
-    // Clear the time, re-start the timer
-    time = 0;
-    timer = try std.time.Timer.start();
-    start = timer.lap();
-
-    // Cycle of 198 operations each
-    k = 0; // helper coefficient to get the keys rotating
-    for (0..N / 198) |i| {
-
-        // Read 1
-        for (keys.items[i + k .. i + k + 1]) |key| {
-            assert(sL.get(key) == key);
-        }
-
-        // Insert 98 new
-        for (keys.items[i + k + 1 .. i + k + 99]) |key| {
+    var checksum_exh: u64 = 0;
+    if (!use_steady) {
+        for (keys.items[0..1]) |key| {
             try sL.put(key, key);
         }
+        timer = try std.time.Timer.start();
 
-        // Remove 98
-        for (keys.items[i + k .. i + k + 98]) |key| {
-            assert(sL.remove(key));
+        var k: usize = 0;
+        for (0..N / 198) |i| {
+            for (keys.items[i + k .. i + k + 1]) |key| {
+                const v = sL.get(key) orelse unreachable;
+                checksum_exh +%= v;
+            }
+            for (keys.items[i + k + 1 .. i + k + 99]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[i + k .. i + k + 98]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EXH remove");
+            }
+            for (keys.items[i + k + 98 .. i + k + 99]) |key| {
+                if (!sL.update(key, key)) @panic("bench invariant failed: EXH update");
+            }
+            k += 97;
         }
-
-        // Update 1
-        for (keys.items[i + k + 98 .. i + k + 99]) |key| {
-            assert(sL.update(key, key));
+        time = timer.read();
+    } else {
+        for (keys.items[0..exh_steady]) |key| {
+            try sL.put(key, key);
         }
+        timer = try std.time.Timer.start();
 
-        k += 97;
+        var resident_start: usize = 0;
+        for (0..cycles_exh) |_| {
+            const key0 = keys.items[resident_start];
+            const v = sL.get(key0) orelse unreachable;
+            checksum_exh +%= v;
+
+            for (keys.items[resident_start + exh_steady .. resident_start + exh_steady + 98]) |key| {
+                try sL.put(key, key);
+            }
+            for (keys.items[resident_start .. resident_start + 98]) |key| {
+                if (!sL.remove(key)) @panic("bench invariant failed: EXH remove");
+            }
+            const up = keys.items[resident_start + exh_steady + 97];
+            if (!sL.update(up, up)) @panic("bench invariant failed: EXH update");
+
+            resident_start += 98;
+        }
+        time = timer.read();
+        if (sL.size != exh_steady) @panic("bench invariant failed: EXH size");
     }
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    std.mem.doNotOptimizeAway(checksum_exh);
+    const ops_exh: usize = (N / 198) * 198;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("EXH", N, time);
+    try writeStamps("EXH", ops_exh, time);
 
     // Clear the sL
-    assert(sL.size == 1);
+    if (sL.size != 1 and !use_steady) @panic("bench invariant failed: EXH size");
     try sL.clearRetainingCapacity();
     arenaCacheSizeQuery(&sL.cache);
 
@@ -473,17 +594,17 @@ pub fn benchU64(N: usize) !void {
     }
 
     // Clear the time, re-start the timer
-    time = 0;
     timer = try std.time.Timer.start();
-    start = timer.lap();
 
     // Cycle of 100 operations each
-    k = 0; // helper coefficient to get the keys rotating
+    var k: usize = 0; // helper coefficient to get the keys rotating
+    var checksum_rg: u64 = 0;
     for (0..N / 100) |i| {
 
         // Read 5
         for (keys.items[i + k .. i + k + 5]) |key| {
-            assert(sL.get(key) == key);
+            const v = sL.get(key) orelse unreachable;
+            checksum_rg +%= v;
         }
 
         // Insert 80 new
@@ -493,45 +614,42 @@ pub fn benchU64(N: usize) !void {
 
         // Remove 5
         for (keys.items[i + k .. i + k + 5]) |key| {
-            assert(sL.remove(key));
+            if (!sL.remove(key)) @panic("bench invariant failed: RG remove");
         }
 
         // Update 10
         for (keys.items[i + k + 5 .. i + k + 15]) |key| {
-            assert(sL.update(key, key));
+            if (!sL.update(key, key)) @panic("bench invariant failed: RG update");
         }
 
         k += 79;
     }
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    time = timer.read();
+    std.mem.doNotOptimizeAway(checksum_rg);
+    const ops_rg: usize = (N / 100) * 100;
 
     // Print stats //
     // Test' individual stats
-    try writeStamps("RG", N, time);
+    try writeStamps("RG", ops_rg, time);
     arenaCacheSizeQuery(&sL.cache);
 
     // ---------------- CLONING -----------------//
     // ------ obtain a clone of the graph ------ //
 
     // Clear the time, re-start the timer
-    time = 0;
     timer = try std.time.Timer.start();
-    start = timer.lap();
 
     var clone = try sL.clone();
     defer clone.deinit();
 
-    end = timer.read();
-    time += end -| start;
-    aggregate += time;
+    time = timer.read();
 
     // Print stats //
     // Test' individual stats
     try writeStamps("CLONE", clone.size, time);
 
     try stdout.print("\n", .{});
+    try stdout.flush();
 }
 
 /// Print to the screen the size of the current memory being used by the arena allocator
@@ -539,7 +657,7 @@ pub fn benchU64(N: usize) !void {
 fn arenaCacheSizeQuery(cache: anytype) void {
     std.debug.print("arena size: {}, cache len: {}\n\n", .{
         cache.arena.queryCapacity(),
-        cache.free.len,
+        cache.len(),
     });
 }
 
@@ -547,19 +665,21 @@ fn toSeconds(t: u128) f64 {
     return @as(f64, @floatFromInt(t)) / 1_000_000_000;
 }
 
-fn throughput(N: usize, time: u128) f64 {
-    return @as(f64, @floatFromInt(N)) / toSeconds(time) / 1_000_000;
+fn throughput(ops: usize, time: u128) f64 {
+    if (ops == 0 or time == 0) return 0;
+    return @as(f64, @floatFromInt(ops)) / toSeconds(time) / 1_000_000;
 }
 
-fn writeStamps(test_name: []const u8, N: usize, time: u128) !void {
-    const throughput_ = throughput(N, time);
+fn writeStamps(test_name: []const u8, ops: usize, time: u128) !void {
+    const throughput_ = throughput(ops, time);
     const runtime = toSeconds(time);
 
     try stdout.print("|{s: <13}|{d: >11.2}|{d: >11.6}|\n", .{ test_name, throughput_, runtime });
+    try stdout.flush();
 }
 
 fn pretty(N: usize, buffer: []u8, alloc: std.mem.Allocator) usize {
-    var stack = std.ArrayList(u8).init(alloc);
+    var stack = std.array_list.Managed(u8).init(alloc);
     defer stack.deinit();
 
     var N_ = N;
@@ -604,6 +724,10 @@ const HELP =
     \\      [-str], string,
     \\      benchmark string literals as keys
     \\
+    \\      [-steady <N>], unsigned integer,
+    \\      use a larger steady-state size for READ HEAVY (RH). RH will start with N items
+    \\      (min 98) and then remove 1 / insert 1 per cycle to keep size constant.
+    \\
     \\      [-h], string,
     \\      display this menu
     \\
@@ -619,36 +743,44 @@ pub fn main() !void {
     // default number of operations
     var N: usize = 100_000;
     var string: bool = false;
+    var steady_state: usize = 0;
 
     var i: usize = 1;
-    if (args.len > 3) {
-        std.debug.print(HELP ++ "\n", .{});
-        return;
-    }
-
-    while (i < args.len) : (i += 1) {
-        var integer: bool = true;
-
-        for (args[i]) |char| {
-            if (char < 48 or char > 57 and char != 95) integer = false;
-        }
-
-        if (integer) {
-            // TODO give warning if N > 1B, y - n ?
-            N = try std.fmt.parseUnsigned(usize, args[i], 10);
-            // break;
-        } else if (std.mem.eql(u8, args[i], "-h")) {
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-h")) {
             std.debug.print(HELP ++ "\n", .{});
             return;
-        } else if (std.mem.eql(u8, args[i], "-str")) {
+        } else if (std.mem.eql(u8, arg, "-str")) {
             string = true;
+            i += 1;
+            continue;
+        } else if (std.mem.eql(u8, arg, "-steady") or std.mem.eql(u8, arg, "--steady")) {
+            if (i + 1 >= args.len) {
+                std.debug.print(HELP ++ "\n", .{});
+                return;
+            }
+            steady_state = try std.fmt.parseUnsigned(usize, args[i + 1], 10);
+            i += 2;
+            continue;
         } else {
-            std.debug.print(HELP ++ "\n", .{});
-            return;
+            // Parse as integer N (allow underscores)
+            var integer: bool = true;
+            for (arg) |char| {
+                if ((char < '0' or char > '9') and char != '_') integer = false;
+            }
+            if (!integer) {
+                std.debug.print(HELP ++ "\n", .{});
+                return;
+            }
+            // TODO give warning if N > 1B, y - n ?
+            N = try std.fmt.parseUnsigned(usize, arg, 10);
+            i += 1;
+            continue;
         }
     }
 
     if (string) {
-        try benchSTR(N);
-    } else try benchU64(N);
+        try benchSTR(N, steady_state);
+    } else try benchU64(N, steady_state);
 }

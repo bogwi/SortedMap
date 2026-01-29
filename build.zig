@@ -5,24 +5,19 @@ pub fn build(b: *std.Build) void {
 
     _ = b.addModule(
         "SortedMap",
-        .{ .source_file = .{ .path = "src/sorted_map.zig" } },
+        .{ .root_source_file = b.path("src/sorted_map.zig") },
     );
 
-    const lib = b.addStaticLibrary(.{
-        .name = "skiplist",
-        .root_source_file = .{ .path = "src/sorted_map.zig" },
-        .target = target,
-        .optimize = .ReleaseSafe,
-    });
-
-    b.installArtifact(lib);
+    // Library artifact removed - use the module directly instead
 
     // BENCH
     const bench = b.addExecutable(.{
         .name = "SortedMap_bench",
-        .root_source_file = .{ .path = "src/bench.zig" },
-        .target = target,
-        .optimize = .ReleaseFast,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
     });
     const bench_run = b.addRunArtifact(bench);
     if (b.args) |args| {
@@ -33,9 +28,11 @@ pub fn build(b: *std.Build) void {
 
     // TEST
     const main_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/sorted_map.zig" },
-        .target = target,
-        .optimize = .ReleaseSafe,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sorted_map.zig"),
+            .target = target,
+            .optimize = .ReleaseSafe,
+        }),
     });
     const run_main_tests = b.addRunArtifact(main_tests);
     const test_step = b.step("test", "Run library tests");

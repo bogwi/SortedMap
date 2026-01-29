@@ -1,4 +1,4 @@
-# SortedMap in ZIG
+# SortedMap in Zig
 
 ## Description
 
@@ -10,6 +10,8 @@ Sorted Map is a fast key-value table, an advance version of [skiplist ADT](https
 * Values are arbitrary values.
 * Works in `.set` or `.list` mode. The latter allows duplicate keys.
 * Has forward and backward iteration.
+* Thread-safe public API (per-instance `std.Thread.RwLock`).
+* RAII-style locked iterators/slices (hold a shared lock until `deinit()`).
 * Has `min`, `max`, `median` key query.
 * Supports queries by key or index, similar to Python's list class, including reverse indexing.
 * Basic operations like `get`, `remove` work on a range as well.
@@ -17,7 +19,7 @@ Sorted Map is a fast key-value table, an advance version of [skiplist ADT](https
 * Updating the values by giving the `start_key` - `stop_key` range is O(1) each update.
 
 ## Performance
-The benchmark is a set of standard stress routines to measure the throughput for the given task. The machine is an Apple M1 with 32GB RAM, optimization flag `ReleaseFast`.
+The benchmark is a set of standard stress routines to measure throughput for a few operation mixes. The machine is an Apple M4 Pro (12‑core), optimization flag `ReleaseFast`.
 
 There are five tests in total, all of which are run on the random data with intermediate shuffling during the test stages:
 
@@ -40,48 +42,96 @@ A scenario where the map is used to collect large amounts of data in a short bur
 **CLONE**\
 Clone the Map. That is, rebuild the map anew yet from the sorted data.
 
-### `u64`, arbitrary feed
+Notes:
+- For `RH` / `EX` / `EXH`, the `-steady <N>` flag switches these from a small, hot working-set benchmark (default) to a **constant-size "resident set"** benchmark. The default numbers are not "toy" results: many real uses of a sorted map operate at small sizes where everything fits in cache. Each cycle removes from the front of a sliding window and inserts at the back, keeping the map size ~constant.
+- `EXH` runs cycles of 198 operations, so when the requested `N` isn't divisible by 198, the benchmark rounds down to `floor(N/198)*198` for that test's throughput calculation.
+
+### `u64`, arbitrary feed (default / hot working set)
 ```
                SortedMap u64 BENCHMARK|
-              10_000_000 ops:each test|
+               1_000_000 ops:each test|
 
 |name         |Tp Mops:sec|    Rt :sec|
  =====================================
-|RH           |      51.47|   0.194274|
+|RH           |      59.71|   0.016747|
+arena size: 13804, cache len: 127
+
+|EX           |      31.58|   0.031670|
+arena size: 13804, cache len: 119
+
+|EXH          |      27.53|   0.036321|
 arena size: 13804, cache len: 131
 
-|EX           |      23.25|   0.430069|
-arena size: 13804, cache len: 121
+|RG           |       1.33|   0.749447|
+arena size: 78068140, cache len: 5
 
-|EXH          |      20.20|   0.494928|
-arena size: 13804, cache len: 135
-
-|RG           |       0.53|  18.996072|
-arena size: 595966060, cache len: 5
-
-|CLONE        |       5.86|   1.279128|
+|CLONE        |       5.95|   0.126067|
 ```
 
-### `[8]const u8`, arbitrary literal, arbitrary feed
+### `u64`, arbitrary feed (`-steady 100_000` / large resident set)
 ```
-               SortedMap STR BENCHMARK|
-              10_000_000 ops:each test|
+               SortedMap u64 BENCHMARK|
+               1_000_000 ops:each test|
 
 |name         |Tp Mops:sec|    Rt :sec|
  =====================================
-|RH           |      25.49|   0.392336|
+|RH           |      12.59|   0.079411|
+arena size: 9984748, cache len: 116621
+
+|EX           |       3.95|   0.253051|
+arena size: 9984748, cache len: 116946
+
+|EXH          |       3.75|   0.266472|
+arena size: 9984748, cache len: 117008
+
+|RG           |       1.36|   0.737792|
+arena size: 78068140, cache len: 5
+
+|CLONE        |       5.90|   0.127064|
+```
+
+### `[8]const u8`, arbitrary literal, arbitrary feed (default / hot working set)
+```
+               SortedMap STR BENCHMARK|
+               1_000_000 ops:each test|
+
+|name         |Tp Mops:sec|    Rt :sec|
+ =====================================
+|RH           |      36.06|   0.027734|
+arena size: 13564, cache len: 134
+
+|EX           |      20.52|   0.048726|
+arena size: 13564, cache len: 126
+
+|EXH          |      17.33|   0.057692|
 arena size: 13564, cache len: 133
 
-|EX           |      17.02|   0.587408|
-arena size: 13564, cache len: 123
+|RG           |       0.78|   1.285388|
+arena size: 78068284, cache len: 5
 
-|EXH          |      14.49|   0.690115|
-arena size: 13564, cache len: 137
+|CLONE        |       4.47|   0.167763|
+```
 
-|RG           |       0.37|  26.855707|
-arena size: 894236804, cache len: 5
+### `[8]const u8`, arbitrary literal, arbitrary feed (`-steady 100_000` / large resident set)
+```
+               SortedMap STR BENCHMARK|
+               1_000_000 ops:each test|
 
-|CLONE        |       3.12|   2.400613|
+|name         |Tp Mops:sec|    Rt :sec|
+ =====================================
+|RH           |       3.40|   0.293788|
+arena size: 9984684, cache len: 116841
+
+|EX           |       1.98|   0.504200|
+arena size: 9984684, cache len: 116982
+
+|EXH          |       1.76|   0.567660|
+arena size: 9984684, cache len: 117089
+
+|RG           |       0.82|   1.216110|
+arena size: 78068284, cache len: 5
+
+|CLONE        |       4.68|   0.160204|
 ```
 
 ## How to run the benchmark
@@ -94,9 +144,16 @@ Give it a larger number to stress the map more.
 ```
 zig build bench -- 1_000_000
 ```
-Prepend with `-str` to test on the arbitrary `[8]u8` word.
+Add `-steady <N>` to run `RH`/`EX`/`EXH` against a large constant-size resident set (more realistic for cache/exchange scenarios):
+```
+zig build bench -- 1_000_000 -steady 100_000
+```
+Prepend with `-str` to test on the arbitrary `[8]u8` word (can be combined with `-steady`):
 ```
 zig build bench -- 1_000_000 -str
+```
+```
+zig build bench -- 1_000_000 -str -steady 100_000
 ```
 
 ## How to use it
@@ -109,21 +166,57 @@ const SortedMap = @import("sorted_map.zig").SortedMap;
 
 Initiate for numeric keys:
 ```zig
-const map = SortedMap(u64, your_value_type, .list).init(your_allocator);
+var map = try SortedMap(u64, your_value_type, .list).init(your_allocator);
 defer map.deinit();
 
 ```
 
 Initiate for string literal keys:
 ```zig
-const map = SortedMap([]const u8, your_value_type, .set).init(your_allocator);
+var map = try SortedMap([]const u8, your_value_type, .set).init(your_allocator);
 defer map.deinit();
 ```
+
+### Thread-safety and locked iterators
+
+`SortedMap` uses a per-instance `std.Thread.RwLock` internally, so most public APIs are safe to call concurrently on the same map instance.
+
+- **Write APIs** take an exclusive lock (e.g. `put`, `remove*`, `update*`, `setSlice*`, `clear*`, `deinit`).
+- **Read APIs** take a shared lock (e.g. `get*`, `contains`, `min/max/median`).
+
+Some low-level pointer-returning APIs are **not** thread-safe and require holding `lockShared()` externally (e.g. `getNodePtr`, `getNodePtrByIndex`):
+
+```zig
+map.rwlock.lockShared();
+defer map.rwlock.unlockShared();
+
+if (map.getNodePtr(some_key)) |node| {
+    _ = node; // safe to read while lockShared is held
+}
+```
+
+Iteration is thread-safe via **locked iterators** that hold `rwlock.lockShared()` for their lifetime. Always release the lock with `defer it.deinit();`:
+
+```zig
+var it = map.items();
+defer it.deinit();
+while (it.next()) |item| {
+    _ = item;
+}
+```
+
+The following APIs return locked iterators and **require `deinit()`**:
+
+- `items()` / `itemsReversed()`
+- `iterByKey()` / `iterByIndex()`
+- `getSliceByKey()` / `getSliceByIndex()`
+
+**Deadlock caveat**: while a locked iterator is alive on a thread, don't call other map methods that also lock `rwlock` (shared or exclusive) from the same thread.
 
 
 ## zig version
 ```
-0.12.0-dev.1830+779b8e259
+0.15.2
 ```
 
 
